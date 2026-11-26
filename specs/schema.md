@@ -1,6 +1,17 @@
 # Схема данных
 
-Версия 0.1 (Фаза 0). Хранилище: Parquet в `data/processed/` + DuckDB (`data/processed/one_director.duckdb`). Pydantic-модели таблиц реализует 01-data в `src/one_director/data/schema.py`; изменение схемы — сначала PR в этот файл, потом код.
+Версия 0.2 (решения из `specs/decisions.md`). Изменение схемы — сначала PR в этот файл, потом код.
+
+**Хранилище — два файла DuckDB, у каждого один писатель** (решение D-23; в DuckDB одновременно пишет только один процесс):
+
+| Файл | Таблицы | Пишет | Читает |
+|---|---|---|---|
+| `data/processed/one_director.duckdb` (+ Parquet в `data/processed/`) | `lots`, `bids`, `firms`, `persons`, `flags`, `risk_scores`, `briefs` | только пайплайн (01 → 03 → 02 → 04 → 03 → 05 → 06) | API — только `read_only=True` |
+| `data/processed/app_state.duckdb` | `audit_log`, `users` | только API (07) и CLI администратора | — |
+
+Пайплайн и API могут работать одновременно. Пайплайн пересобирает `one_director.duckdb` во временный файл и подменяет его атомарно; API переоткрывает соединение при следующем запросе.
+
+**Pydantic-модели всех таблиц** (`Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`) реализует 01-data в `src/one_director/data/schema.py` (решение D-07). Остальные агенты импортируют модели оттуда и не описывают таблицы заново.
 
 ## Классы чувствительности
 
@@ -17,9 +28,9 @@
 
 - Все времена — `TIMESTAMPTZ` в UTC; даты — `DATE`.
 - Денежные суммы — `DECIMAL(20, 2)` в валюте `currency` (не float).
-- ИНН (STIR) — `VARCHAR(9)`, только цифры, валидируется регуляркой `^[0-9]{9}$`. Формат идентификаторов площадки (`trade_id`) **сверить с фикстурами** (открытый вопрос); до этого — `VARCHAR(32)`, `^[0-9A-Za-z_-]{1,32}$`.
+- ИНН (STIR) — `VARCHAR(9)`, только цифры, валидируется регуляркой `^[0-9]{9}$`. `trade_id` — целое число площадки (например, `524614`), хранится как `VARCHAR(32)`, валидируется `^[0-9]{1,12}$` (решение D-09; при нецифровом значении в фикстурах — PR в этот файл).
 - Текстовые поля из источника (`title`, `*_name`) — **недоверенный ввод**: хранятся как есть, экранируются при выводе, не передаются в LLM как инструкции.
-- Каждая таблица, наполняемая из источника, имеет технические поля `collected_at TIMESTAMPTZ` и `source` (`etender` / `registry`) — в таблицах ниже не повторяются.
+- Каждая таблица, наполняемая из источника, имеет технические поля `collected_at TIMESTAMPTZ` и `source` (`etender` / `registry` / `committee` — последний только для официально переданного датасета комитета/RTAM, D-04) — в таблицах ниже не повторяются.
 - Источник `computed` — значение вычисляется нашим кодом.
 
 ## `lots` — лоты и сделки
@@ -29,6 +40,7 @@
 | `trade_id` | VARCHAR(32) | нет (PK) | etender | public | идентификатор торгов на площадке |
 | `display_no` | VARCHAR(64) | да | etender | public | номер лота для отображения |
 | `title` | VARCHAR(1000) | нет | etender | public (недоверенный текст) | название/предмет лота |
+| `procedure_type` | VARCHAR(32) | да | etender (`GetTrade.type_name`) → нормализация | public | способ закупки: `best_offer` (Eng yaxshi takliflarni tanlash), `tender`, `auction`, `other` (D-39). Модель считает только конкурентные способы; граница модели — R3 |
 | `category` | VARCHAR(64) | да | etender → нормализация | public | код категории (белый список) |
 | `customer_inn` | VARCHAR(9) | нет | etender | public | ИНН заказчика (госорган/госпредприятие) |
 | `customer_name` | VARCHAR(500) | да | etender | public (недоверенный текст) | название заказчика |
@@ -36,7 +48,7 @@
 | `deal_cost` | DECIMAL(20,2) | да | etender | public | цена сделки/договора (нет у несостоявшихся) |
 | `currency` | VARCHAR(3) | нет | etender | public | ISO 4217, обычно `UZS` |
 | `deal_date` | DATE | да | etender | public | дата сделки |
-| `region` | VARCHAR(64) | да | etender → нормализация | public | код региона (белый список) |
+| `region` | VARCHAR(64) | да | etender → нормализация | public | код региона, белый список (D-08): `tashkent_city`, `tashkent_region`, `andijan`, `bukhara`, `fergana`, `jizzakh`, `khorezm`, `namangan`, `navoi`, `kashkadarya`, `samarkand`, `syrdarya`, `surkhandarya`, `karakalpakstan` |
 | `participants_count` | SMALLINT | да | etender | public | число участников по данным площадки; **не пересчитывается из `bids`** — расхождение с числом записей в `bids` нужно видеть (R2, `specs/agents/04-graph.md`) |
 | `status` | VARCHAR(32) | нет | etender → нормализация | public | `completed` / `cancelled` / `failed` / `other` |
 | `source_url` | VARCHAR(500) | нет | computed | public | ссылка на страницу лота (документы не скачиваются) |
@@ -51,7 +63,7 @@
 | `is_winner` | BOOLEAN | нет | etender | public | победитель |
 | `bid_price` | DECIMAL(20,2) | **да** | etender | public | цена заявки; может быть недоступна |
 | `submitted_at` | TIMESTAMPTZ | **да** | etender | public | время подачи; может быть недоступно |
-| `participant_status` | VARCHAR(32) *(тип уточнить)* | **да** | etender → нормализация | public | *предложение*: статус записи `GetProposalUsers` (заявка / отзыв / допуск / отклонение — значения пока неизвестны). **Ждём ответа UZEX/RTAM, что означают лишние записи в `GetProposalUsers`** (R2). До ответа — `null`; граф соучастия строится по правилу из `specs/agents/04-graph.md` |
+| `participant_status` | VARCHAR(32) | **да** | etender → нормализация | public | *утверждено (D-10)*: статус записи `GetProposalUsers` (заявка / отзыв / допуск / отклонение — значения пока неизвестны). **Ждём ответа UZEX/RTAM, что означают лишние записи в `GetProposalUsers`** (R2). До ответа — `null`; граф соучастия строится по правилу из `specs/agents/04-graph.md` |
 
 PK: (`trade_id`, `participant_inn`). Открытый вопрос (R2): если лишние записи `GetProposalUsers` — повторные записи того же ИНН (например, отзыв и новая подача), этот PK не подойдёт; решение — после ответа UZEX/RTAM, отдельным PR.
 
@@ -67,7 +79,7 @@ PK: (`trade_id`, `participant_inn`). Открытый вопрос (R2): есл�
 | `phone_hash` | VARCHAR(64) | да | registry → HMAC `phone:` | **personal** (псевдоним) | хеш телефона в E.164 |
 | `director_person_id` | VARCHAR(64) | да | registry → HMAC `person:` | **personal** (псевдоним) | директор |
 | `founder_person_ids` | VARCHAR(64)[] | да | registry → HMAC `person:` | **personal** (псевдоним) | учредители-физлица |
-| `founder_firm_inns` | VARCHAR(9)[] | да | registry | public / personal | учредители-юрлица (*предложение*: нужно для общего учредителя-юрлица) |
+| `founder_firm_inns` | VARCHAR(9)[] | да | registry | public / personal | учредители-юрлица (*утверждено, D-10*: нужно детектору посредников и для общего учредителя-юрлица) |
 | `registry_checked_at` | TIMESTAMPTZ | нет | computed | public | когда запрашивался реестр |
 
 ## `persons` — псевдонимы людей (связи «человек — фирма — роль»)
@@ -77,9 +89,11 @@ PK: (`trade_id`, `participant_inn`). Открытый вопрос (R2): есл�
 | Поле | Тип | Nullable | Источник | Класс | Описание |
 |---|---|---|---|---|---|
 | `person_id` | VARCHAR(64) | нет | registry → HMAC | **personal** (псевдоним) | `HMAC-SHA256(PSEUDONYM_SALT, "person:" + norm(ФИО))`, hex |
-| `role` | VARCHAR(16) | нет | registry | personal | `director` / `founder` |
+| `role` | VARCHAR(16) | нет | registry / etender | personal | `director` / `founder` / `beneficiary` |
 | `firm_inn` | VARCHAR(9) | нет | registry | public / personal | *дополнение к ТЗ*: фирма, в которой человек занимает роль |
 | `observed_at` | TIMESTAMPTZ | нет | computed | public | *дополнение к ТЗ*: когда связь зафиксирована |
+
+Источник `etender` (D-15): поля `founder` и `beneficiary` из `DealsList` (только для победителя сделки) псевдонимизируются **в момент разбора** через `security.pseudonymize` и сразу превращаются в строки `persons`; исходный текст на диск не пишется (ни в `data/processed/`, ни в карантин, ни в логи). Сырые ответы в `data/raw/` удаляются по правилам `docs/scraping-policy.md`.
 
 PK: (`person_id`, `firm_inn`, `role`). Поля `firms.director_person_id` / `founder_person_ids` — денормализованная копия для удобства признаков.
 
@@ -111,7 +125,7 @@ PK: (`person_id`, `firm_inn`, `role`). Поля `firms.director_person_id` / `fo
 
 PK: (`object_type`, `object_id`, `model_version`). Старые версии не перезаписываются.
 
-## `audit_log` — журнал доступа (только добавление)
+## `audit_log` — журнал доступа (только добавление; файл `app_state.duckdb`, D-23)
 
 | Поле | Тип | Nullable | Источник | Класс | Описание |
 |---|---|---|---|---|---|
@@ -127,7 +141,7 @@ PK: (`object_type`, `object_id`, `model_version`). Старые версии н�
 | `prev_hash` | VARCHAR(64) | нет | computed | sensitive | *дополнение*: хеш предыдущей записи |
 | `record_hash` | VARCHAR(64) | нет | computed | sensitive | *дополнение*: `SHA-256(prev_hash ‖ canonical_json(запись))` |
 
-## Дополнительные таблицы (предложение, утвердить людям)
+## Дополнительные таблицы (утверждены, D-10)
 
 ### `briefs` — кэш справок LLM
 
@@ -141,7 +155,7 @@ PK: (`object_type`, `object_id`, `model_version`). Старые версии н�
 | `validation` | VARCHAR(16) | нет | computed | sensitive | `passed` / `template_fallback` |
 | `created_at` | TIMESTAMPTZ | нет | computed | sensitive | |
 
-### `users` — учётные записи
+### `users` — учётные записи (файл `app_state.duckdb`, D-23)
 
 | Поле | Тип | Nullable | Источник | Класс | Описание |
 |---|---|---|---|---|---|

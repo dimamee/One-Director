@@ -12,7 +12,7 @@ Planned contract (docs/data-protection.md, "Logs"):
 * Exceptions are logged with type and a redacted message; stack traces only in
   ``APP_ENV=local``.
 * The uvicorn access log is disabled in containers (paths such as
-  ``/firms/{inn}`` contain identifiers); request logging is done by the API
+  ``/firms/{firm_ref}`` contain pseudonymous identifiers); request logging is done by the API
   middleware with redacted paths.
 
 Note: this module intentionally shadows the stdlib name inside the package only;

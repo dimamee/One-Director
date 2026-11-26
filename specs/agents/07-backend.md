@@ -6,9 +6,10 @@
 
 **Выход:**
 - `src/one_director/api/main.py` — приложение `app` (точка входа Docker: `one_director.api.main:app`).
-- Маршруты из контракта: `GET /health`, `POST /auth/token`, `GET /lots`, `GET /lots/{trade_id}`, `GET /firms/{inn}`, `GET /graph`, `GET /reports/{trade_id}.pdf`.
+- Маршруты из контракта: `GET /health`, `POST /auth/token`, `GET /lots`, `GET /lots/{trade_id}`, `GET /firms/{firm_ref}`, `GET /graph`, `GET /reports/{trade_id}.pdf`.
 - Слой доступа к DuckDB (только параметризованные запросы), middleware: `request_id`, заголовки безопасности, CORS, rate limiting, логирование запросов без значений пути.
 - PDF (reportlab) в памяти.
+- Хранилище (D-23): данные читаются из `data/processed/one_director.duckdb` только с `read_only=True`; `audit_log` и `users` пишутся в отдельный `data/processed/app_state.duckdb`. Фирма в путях и параметрах — только `firm_ref` (D-17), ИНН в URL не принимается.
 - CLI администратора для учётных записей.
 
 **Готово, когда:**
@@ -24,7 +25,7 @@
 
 **Тесты:** `tests/api/` (TestClient, синтетическая DuckDB в памяти) + `tests/security/` (authz, маскирование, SQL-инъекции, rate limit, path traversal, секреты в ошибках).
 
-**Можно менять:** `src/one_director/api/`, `tests/api/`.
+**Можно менять:** `src/one_director/api/`, `tests/api/`; в `tests/security/` — только удаление маркеров `skip` своей волны (D-16).
 
 **Нельзя менять:** контракт без PR в `specs/api-contract.md`; `security/`; дашборд; корневые конфиги (Dockerfile, compose — через PR людям).
 

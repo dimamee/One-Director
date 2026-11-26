@@ -21,8 +21,10 @@ services:
     <<: *hardening
     build: .
     image: one-director:local
+    # Secrets live OUTSIDE the project directory (README, "Secrets"; D-31).
+    # Usage: OD_ENV_FILE=~/.config/one-director/.env docker compose up
     env_file:
-      - path: .env
+      - path: ${OD_ENV_FILE:?set OD_ENV_FILE to the env file outside the project}
         required: true
     ports:
       - "127.0.0.1:8000:8000"

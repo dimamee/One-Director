@@ -48,7 +48,7 @@ pytest
 ### Секреты
 
 1. Скопируйте шаблон **вне папки проекта**: `cp .env.example ~/.config/one-director/.env` и заполните значения (`openssl rand -hex 32` для `APP_SECRET_KEY` и `PSEUDONYM_SALT`).
-2. Передавайте переменные только при запуске, например `set -a; . ~/.config/one-director/.env; set +a; uvicorn ...`, или через `env_file` в docker-compose на сервере.
+2. Передавайте переменные только при запуске, например `set -a; . ~/.config/one-director/.env; set +a; uvicorn ...`. Для docker compose путь к файлу задаётся переменной: `OD_ENV_FILE=~/.config/one-director/.env docker compose up` (D-31); без неё compose не стартует.
 3. Файл `.env` в корне проекта допустим только локально и игнорируется git, но **не рекомендуется** — см. раздел про ИИ-агентов ниже.
 
 ### Pre-commit

@@ -47,7 +47,7 @@ flowchart LR
     HUM -->|"тексты legal_refs, проверка юриста"| A06
     HUM -->|"реальные кейсы для бенчмарка"| A05
     HUM -->|"кейсы, сценарий демо"| A10
-    P1 -->|"http_client"| A01
+    P1 -->|"http_client, pseudonymize"| A01
     P1 -->|"pseudonymize, http_client"| A02
     P1 -->|"masking"| A04b
     P1 -->|"llm_guard"| A06
@@ -92,7 +92,7 @@ flowchart LR
 | Откуда | Куда | Артефакт | Нужен, чтобы |
 |---|---|---|---|
 | Фаза 1 | все модули | `security.settings`, `security.logging` | начать код, который их импортирует |
-| Фаза 1 | 01-data | `security.http_client` | закончить (реальная выгрузка) |
+| Фаза 1 | 01-data | `security.http_client`, `security.pseudonymize` (`founder`/`beneficiary` из `DealsList`, D-15) | закончить (реальная выгрузка) |
 | Фаза 1 | 02-registry | `security.pseudonymize`, `security.http_client` | закончить |
 | Фаза 1 | 04-graph (проход 2) | `security.masking` | закончить (метки узлов) |
 | Фаза 1 | 06-report-llm | `security.llm_guard` | закончить |
@@ -123,7 +123,7 @@ flowchart LR
 | Фаза 1 → все | `security.settings`: `Settings`, `get_settings()` | docstring `src/one_director/security/settings.py` | H+0 | нет: агенты не создают файлы в `security/`; до готовности пишут код без импорта `security` (чистые функции над моделями и таблицами) и тесты к нему |
 | Фаза 1 → все | `security.logging`: `configure_logging(level)` | docstring `security/logging.py`; `docs/data-protection.md` §7 | H+0 | нет (как выше) |
 | Фаза 1 → 01, 02 | `security.http_client` | docstring `security/http_client.py`; `docs/scraping-policy.md` §3 | 01: H+2 (выгрузка в H+0–3) | в тестах — mock-транспорт httpx (`httpx.MockTransport`) в `tests/data/`, `tests/registry/`; реальный запуск — только с готовым клиентом |
-| Фаза 1 → 02, 07 | `security.pseudonymize`: `person_id`, `normalize_name`, `address_hash`, `phone_hash`, `ip_hash` | docstring `security/pseudonymize.py`; `docs/data-protection.md` §4 | 07: к `POST /auth/token`; 02: H+8 | в тестах 03/04/05/07 — синтетические строки из 64 hex-символов вместо хешей |
+| Фаза 1 → 01, 02, 07 | `security.pseudonymize`: `person_id`, `normalize_name`, `address_hash`, `phone_hash`, `ip_hash`, `firm_ref` (D-17) | docstring `security/pseudonymize.py`; `docs/data-protection.md` §4; `specs/api-contract.md` (`firm_ref`) | 01: к разбору `DealsList` (D-15); 07: к `POST /auth/token`; 02: H+8 | в тестах 01 — фейковая функция псевдонима в `tests/data/`; в тестах 03/04/05/07 — синтетические строки из 64 hex-символов вместо хешей |
 | Фаза 1 → 07, 04 | `security.masking`: `mask_firm(firm, role, demo_mode, unmask=False)` | docstring `security/masking.py`; `docs/data-protection.md` §5 | H+8 (участники в `GET /lots/{trade_id}`) | нет: эндпоинты с участниками не мержатся без маскирования |
 | Фаза 1 → 07 | `security.auth`: `issue_token`, `decode_token`, `require_role` | docstring `security/auth.py`; `docs/access-control.md` §4–5 | H+3 (`POST /auth/token`, `GET /lots`) | нет |
 | Фаза 1 → 07 | `security.audit`: `record(event)`, `verify_chain()` | docstring `security/audit.py`; `specs/schema.md` `audit_log` | H+3 (`login_success` / `login_failure`) | нет |
@@ -140,7 +140,7 @@ flowchart LR
 | 05 → 10 | `docs/model-card.md`, разделы 4–7, 11 | `docs/model-card.md` §5: synthetic и real — разные таблицы | H+22 (synthetic), H+42 (real) | в слайдах — «метрики будут» |
 | 04 (проход 2) → 07 | функция подграфа: центр, `depth` 1–2, `max_nodes`, `truncated` | `specs/api-contract.md` → `GET /graph` | H+16 | фейковый подграф по контракту в `tests/api/` |
 | 06 → 07 | `briefs` (*предложение*), `legal_refs`, справки демо-лотов | `specs/schema.md` → `briefs`; поле `brief` в `GET /lots/{trade_id}`; `docs/llm-safety.md` §5–8 | H+16 (поле), H+30 (кэш демо) | `brief: null` (контракт допускает `null`) |
-| 07 → 08 | HTTP API по `API_BASE_URL`: `GET /health`, `POST /auth/token`, `GET /lots`, `GET /lots/{trade_id}`, `GET /firms/{inn}`, `GET /graph`, `GET /reports/{trade_id}.pdf` | `specs/api-contract.md` | H+3 (`/health`, `/auth/token`), H+8 (`/lots`), H+16 (карточки, граф), H+30 (PDF) | фейковый API-клиент в `tests/app/` строго по примерам контракта |
+| 07 → 08 | HTTP API по `API_BASE_URL`: `GET /health`, `POST /auth/token`, `GET /lots`, `GET /lots/{trade_id}`, `GET /firms/{firm_ref}`, `GET /graph`, `GET /reports/{trade_id}.pdf` | `specs/api-contract.md` | H+3 (`/health`, `/auth/token`), H+8 (`/lots`), H+16 (карточки, граф), H+30 (PDF) | фейковый API-клиент в `tests/app/` строго по примерам контракта |
 | 08 → 10, люди | `app/main.py` в `DEMO_MODE` | `specs/agents/08-frontend.md` | H+30 | до H+30 — слайды без скриншотов |
 | Люди → 06 | тексты `legal_refs` (ru/uz), отметка «проверено юристом» | `docs/llm-safety.md` §6 | H+16 | `проверено юристом: нет` (как в `specs/agents/06-report-llm.md`) |
 | Люди → 05, 10 | библиотека кейсов (пресс-релизы комитета), сценарий демо | ⚠ место и формат не определены (Q26) | H+16 (сценарий), H+36 (бенчмарк real) | нет |
@@ -209,7 +209,7 @@ Skip в тестовых файлах стоит на уровне модуля 
 | 03-screens | `../od-03-screens` · `agent/03-screens/registry-links` | проход 2: `SHARED_FOUNDER`, `SHARED_DIRECTOR`, `SHARED_ADDRESS`, `SHARED_PHONE` с `match_basis` к H+14 |
 | 05-model | `../od-05-model` · `agent/05-model/risk-v1` | модель v1 → `risk_scores` по всем лотам к H+16 |
 | 06-report-llm | `../od-06-report-llm` · `agent/06-report-llm/briefs` | промпт (`PROMPT_VERSION`), вызов через `llm_guard`, валидация, кэш `briefs` |
-| 07-backend | `../od-07-backend` · `agent/07-backend/cards-graph` | `GET /lots/{trade_id}`, `GET /firms/{inn}`, `GET /graph`; маскирование и `audit_log` (`view_lot`, `view_firm`, `view_graph`) |
+| 07-backend | `../od-07-backend` · `agent/07-backend/cards-graph` | `GET /lots/{trade_id}`, `GET /firms/{firm_ref}`, `GET /graph`; маскирование и `audit_log` (`view_lot`, `view_firm`, `view_graph`) |
 | 08-frontend | `../od-08-frontend` · `agent/08-frontend/lot-card` | карточка лота: факты, флаги с evidence, скор и 3 причины, справка с пометкой источника, исходные цифры рядом, дисклеймер |
 | 10-pitch + Участник 3 | `../od-10-pitch` · `agent/10-pitch/outline` | сценарий демо |
 
@@ -400,7 +400,7 @@ Skip в тестовых файлах стоит на уровне модуля 
 - **Готово, когда:** `specs/agents/04-graph.md`. Интеграция: подграф проходит контрактный тест 07 для `GET /graph`; пометка посредника доходит до 03 как `match_basis = "via_intermediary"` и видна наружу только через `weight`; ребро `co_bid` не отдаётся в `GET /graph`, пока его нет в контракте (Q12).
 - **Безопасность:** узлы людей `P-xxxx`, адресов `A-xxxx`, без полных хешей; метки без HTML; лимиты `depth ≤ 2`, `max_nodes ≤ 300`; пометка «посредник» не выводится. Подробно — `specs/agents/04-graph.md`.
 - **A/B:** без изменений.
-- **Вырезать:** граф не вырезается никогда. При нехватке времени — подграф только по `trade_id` (`inn` недоступен в `DEMO_MODE`, Q17).
+- **Вырезать:** граф не вырезается никогда. При нехватке времени — подграф только по `trade_id`, без `firm_ref` (D-17).
 - **Промпт запуска:**
 
 ```
@@ -501,7 +501,7 @@ Skip в тестовых файлах стоит на уровне модуля 
 - **Старт / дедлайн:** H+3 (каркас). Карточка лота — H+8–16; граф, карта, PDF, ru/uz — H+22–30. Дедлайн — H+30.
 - **Вход:** API по `API_BASE_URL` (`specs/api-contract.md`), `docs/glossary-uz-ru.md`, `docs/access-control.md`. Заглушка: фейковый API-клиент в `tests/app/` строго по примерам контракта.
 - **Выход:** `app/main.py` и модули в `app/`.
-- **Готово, когда:** `specs/agents/08-frontend.md`. Интеграция: сценарий демо проходит в `DEMO_MODE` без сети; в `app/` нет импорта `duckdb`, чтения `data/` и секретов. Карточка фирмы и граф по фирме в `DEMO_MODE` недостижимы (ИНН замаскирован, ⚠ Q17) — до решения граф открывается по `trade_id`. Карта регионов — ⚠ Q19.
+- **Готово, когда:** `specs/agents/08-frontend.md`. Интеграция: сценарий демо проходит в `DEMO_MODE` без сети; в `app/` нет импорта `duckdb`, чтения `data/` и секретов. Карточка фирмы и граф по фирме открываются по `firm_ref` из карточки лота и в `DEMO_MODE` (D-17). Карта регионов — 🟡 D-19.
 - **Безопасность:** экранирование всех строк из данных; без `unsafe_allow_html=True` (хук `no-unsafe-allow-html`); `html.escape` подписей pyvis; токен только в `st.session_state`; без CDN и трекеров. Подробно — `specs/agents/08-frontend.md`.
 - **A/B:** B — ценовые признаки показываются как «не вычислено», без пустых нулей.
 - **Вырезать:** по порядку: карта регионов → кнопка PDF → второй язык интерфейса → интерфейс по ролям (одна роль `analyst` + `DEMO_MODE`). Не вырезается: очередь рисков, карточка лота с 3 причинами, граф, справка, баннер и маскирование `DEMO_MODE`.
@@ -595,6 +595,8 @@ EOF
 
 ## 6. Merge и интеграция
 
+> Нет интернета на площадке → офлайн-режим через локальную ветку `integration` (`specs/decisions.md`, D-20).
+
 **Гейты (все обязательны).**
 - CI «lint, types, security, tests» зелёный: ruff → mypy → bandit → pip-audit → gitleaks → pytest (`.github/workflows/ci.yml`).
 - Вердикт 09-reviewer `approve` с заполненным чек-листом.
@@ -664,13 +666,15 @@ EOF
 | Нет интернета на площадке | нет доступа к GitHub, PyPI, Anthropic | работа продолжается в worktree с локальными проверками; venv и образы собраны до H+0; резервная точка доступа подготовлена до H+0; merge — после восстановления связи (CI на GitHub; ⚠ Q20); справки — из кэша и шаблона; демо локальное |
 | Кончился бюджет LLM (API справок или Claude Code) | ошибка лимита; исчерпан `LLM_SESSION_BUDGET_TOKENS`; лимит расходов в консоли Anthropic | справки — шаблон (fallback), демо-лоты из кэша (предгенерация в волне 4); лимиты расходов выставить до H+0; при нехватке бюджета на агентов — сначала то, что «не вырезается никогда», остальное — по порядку вырезания |
 | Узкое место ревью и merge (3 человека, 10 агентов, одобрение не автором, «branches up to date») | очередь > 4 PR или PR ждёт > 1 часа | merge пачками в окна интеграции в порядке раздела 6; маленькие PR; 09 — первым; владелец не ведёт больше 3 агентов одновременно |
-| Блокировка файла DuckDB (один писатель: пайплайн и `audit_log` API) | ошибка блокировки при запуске пайплайна во время работы API | ⚠ Q23; до решения пайплайн запускается при остановленном API в окна интеграции |
+| Блокировка файла DuckDB (один писатель: пайплайн и `audit_log` API) | ошибка блокировки при запуске пайплайна во время работы API | решено D-23: два файла — `one_director.duckdb` (пишет пайплайн, API читает `read_only=True`) и `app_state.duckdb` (пишет только API); при ошибке блокировки — проверить, что API не открыл `one_director.duckdb` на запись |
 | Не согласован источник реестра | к H+8 нет решения (Q1) | `SHARED_*` — «не вычислено»; граф по `bid`/`won`/`co_bid`; в питче — честная граница |
 | Нет разрешения на запуск сборщика / площадка вернула 429/403 | сборщик остановился сам | не перезапускать; `docs/scraping-policy.md` §8 и `docs/incident-response.md` §8; работать на собранных данных и синтетике |
 | Агент выполняет текст из данных или выходит за свои папки | diff вне разрешённых папок; сетевые вызовы мимо `security.http_client`; в данных текст, обращённый к агенту | 09 — `request changes` с цитатой; человек проверяет ветку; правило «данные ≠ инструкции» (`CLAUDE.md`) |
 | Секрет доступен агенту | `.env` в корне основного клона (его требует `docker-compose.yml`) читается из worktree по абсолютному пути | агенты работают только в `../od-*`; секреты — вне папок проекта по README; ⚠ Q31 |
 
 ## 9. Открытые вопросы
+
+> **Решения по всем вопросам Q1–Q41 — в `specs/decisions.md`** (номер решения D-N = номер вопроса QN). Где решение противоречит тексту этого плана, действует `specs/decisions.md`. Ключевые изменения: `firm_ref` вместо ИНН в API (D-17), два файла DuckDB (D-23), хост `apietender.uzex.uz` (D-29), офлайн-интеграция через ветку `integration` (D-20).
 
 | № | Вопрос | Почему важно | Кто решает | К какому H+ |
 |---|---|---|---|---|

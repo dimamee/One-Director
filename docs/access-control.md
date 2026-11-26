@@ -32,8 +32,8 @@
 | `GET /lots` | очередь рисков | ❌ 401 | ✅ M | ✅ M | ✅ M | ❌ |
 | `GET /lots/{trade_id}` | карточка лота | ❌ 401 | ❌ | ✅ M A | ✅ M A | ❌ |
 | `GET /lots/{trade_id}?unmask=true&reason=…` | снять маску ИП в карточке | ❌ 401 | ❌ | ❌ | ✅ A (вне `DEMO_MODE`) | ❌ |
-| `GET /firms/{inn}` | карточка фирмы | ❌ 401 | ❌ | ✅ M A | ✅ M A | ❌ |
-| `GET /firms/{inn}?unmask=true&reason=…` | снять маску ИП | ❌ 401 | ❌ | ❌ | ✅ A (вне `DEMO_MODE`) | ❌ |
+| `GET /firms/{firm_ref}` | карточка фирмы (D-17: в URL — псевдоним `firm_ref`, не ИНН) | ❌ 401 | ❌ | ✅ M A | ✅ M A | ❌ |
+| `GET /firms/{firm_ref}?unmask=true&reason=…` | снять маску ИП | ❌ 401 | ❌ | ❌ | ✅ A (вне `DEMO_MODE`) | ❌ |
 | `GET /graph` | граф связей | ❌ 401 | ❌ | ✅ M A | ✅ M A | ❌ |
 | `GET /reports/{trade_id}.pdf` | экспорт PDF | ❌ 401 | ❌ | ❌ | ✅ M A | ❌ |
 | управление пользователями (CLI, не HTTP) | создать/заблокировать/сменить роль | — | — | — | — | ✅ A |
