@@ -15,7 +15,7 @@ Planned contract (docs/scraping-policy.md):
   etender.uzex.uz site -- the only host data is actually fetched from) and the
   agreed registry source; redirects to other hosts are refused. The file host
   ``etender-fileservice.uzex.uz`` is NOT allowed (no document downloads, see
-  specs/decisions.md D-29 and D-04).
+  specs/decisions.md D-29 and D-4).
 * Clear ``User-Agent`` with the project name and the team contact.
 * No cookies/sessions with credentials, no proxies rotation, no CAPTCHA
   solving, no header spoofing.

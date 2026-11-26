@@ -8,7 +8,7 @@
 - `one_director.security.http_client` (Фаза 1) — единственный разрешённый способ ходить в сеть.
 
 **Выход:**
-- `src/one_director/data/schema.py` — pydantic-модели **всех** таблиц `specs/schema.md`: `Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User` (+ модели сырого ответа площадки). Остальные агенты импортируют их отсюда (D-07).
+- `src/one_director/data/schema.py` — pydantic-модели **всех** таблиц `specs/schema.md`: `Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User` (+ модели сырого ответа площадки). Остальные агенты импортируют их отсюда (D-7).
 - `src/one_director/data/collect.py` — инкрементальный сборщик (CLI: период, категории, `--dry-run`), пишет сырые ответы в `data/raw/`.
 - `src/one_director/data/process.py` — разбор `data/raw/` → Parquet/DuckDB в `data/processed/`, карантин невалидных записей, удаление обработанного сырья.
 
