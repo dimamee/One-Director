@@ -1,0 +1,26 @@
+# Allowlist: everything is excluded from the build context unless re-included.
+*
+
+!requirements.txt
+!src/
+!app/
+
+# Explicit deny list (redundant with "*", kept for readability; also
+# re-excludes anything that might appear inside the allowed directories).
+.env
+.env.*
+**/.env
+**/.env.*
+secrets/
+data/
+**/*.duckdb
+**/*.parquet
+.git
+.github/
+.claude/
+notebooks/
+**/*.ipynb
+**/__pycache__
+**/*.py[cod]
+.venv/
+tests/

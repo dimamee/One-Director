@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./data/raw/**)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)"
+    ],
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(mypy:*)",
+      "Bash(bandit:*)",
+      "Bash(pip-audit:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

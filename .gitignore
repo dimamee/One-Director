@@ -1,9 +1,60 @@
-.venv/
-__pycache__/
-*.pyc
+# ---------------------------------------------------------------------------
+# Secrets — never committed (SECURITY.md, docs/incident-response.md)
+# ---------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
-data/raw/
-data/processed/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# Claude Code: personal, machine-local settings (the shared policy is
+# .claude/settings.json and IS committed)
 .claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Data — only the README is tracked (docs/data-protection.md)
+# ---------------------------------------------------------------------------
+/data/*
+!/data/README.md
+*.duckdb
+*.duckdb.wal
+*.parquet
+!/tests/fixtures/**/*.parquet
+# Generated reports may contain unmasked data
+/reports/
+*.pdf
+
+# ---------------------------------------------------------------------------
+# Notebooks: checkpoints and local scratch copies
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+notebooks/scratch/
+
+# ---------------------------------------------------------------------------
+# Python / tooling
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

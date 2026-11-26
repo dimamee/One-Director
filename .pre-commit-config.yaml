@@ -1,0 +1,136 @@
+# Pre-commit hooks for One Director.
+#
+# All hooks are `repo: local`: the tools come from the pinned, hash-locked
+# virtualenv (requirements-dev.txt), so pre-commit never clones hook
+# repositories from the network. Activate the venv before committing:
+#
+#     source .venv/bin/activate
+#     pre-commit install            # installs pre-commit AND pre-push hooks
+#
+# gitleaks is a Go binary (not on PyPI) and must be installed separately
+# (README, "Pre-commit"). Without it the hook FAILS on purpose (fail closed).
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: local
+    hooks:
+      # ----------------------------------------------------------------- secrets
+      - id: gitleaks
+        name: gitleaks (secrets in staged changes)
+        entry: gitleaks protect --staged --redact --verbose
+        language: system
+        pass_filenames: false
+
+      - id: detect-private-key
+        name: detect private keys
+        entry: detect-private-key
+        language: system
+        types: [text]
+
+      - id: forbid-secret-and-data-files
+        name: forbid .env, keys, raw data, local Claude settings
+        entry: "Secrets, keys and data files must never be committed (SECURITY.md)."
+        language: fail
+        files: '(^|/)\.env($|\.(?!example$))|(^|/)secrets/|\.(pem|key|p12|pfx)$|^data/(?!README\.md$)|^\.claude/settings\.local\.json$'
+
+      # ----------------------------------------------------------------- hygiene
+      - id: check-added-large-files
+        name: check for large files
+        entry: check-added-large-files --maxkb=500
+        language: system
+
+      - id: check-merge-conflict
+        name: check for merge conflict markers
+        entry: check-merge-conflict
+        language: system
+        types: [text]
+
+      - id: check-yaml
+        name: check yaml
+        entry: check-yaml
+        language: system
+        types: [yaml]
+
+      - id: check-toml
+        name: check toml
+        entry: check-toml
+        language: system
+        types: [toml]
+
+      - id: check-json
+        name: check json
+        entry: check-json
+        language: system
+        types: [json]
+
+      - id: end-of-file-fixer
+        name: fix end of files
+        entry: end-of-file-fixer
+        language: system
+        types: [text]
+        exclude: ^TASK\.md$
+
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+        entry: trailing-whitespace-fixer --markdown-linebreak-ext=md
+        language: system
+        types: [text]
+        exclude: ^TASK\.md$
+
+      - id: mixed-line-ending
+        name: force LF line endings
+        entry: mixed-line-ending --fix=lf
+        language: system
+        types: [text]
+        exclude: ^TASK\.md$
+
+      # ------------------------------------------------------------------ python
+      - id: ruff-check
+        name: ruff check (incl. flake8-bandit)
+        entry: ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      - id: mypy
+        name: mypy (src/)
+        entry: mypy
+        language: system
+        pass_filenames: false
+        files: ^src/
+
+      - id: bandit
+        name: bandit (src/)
+        entry: bandit -c pyproject.toml -q -r src
+        language: system
+        pass_filenames: false
+        files: ^src/
+
+      # ----------------------------------------------------------- project rules
+      - id: no-unsafe-allow-html
+        name: forbid unsafe_allow_html (XSS, docs/threat-model.md)
+        entry: 'unsafe_allow_html\s*=\s*True'
+        language: pygrep
+        types: [python]
+
+      - id: no-tls-verify-off
+        name: forbid disabling TLS verification
+        entry: 'verify\s*=\s*False'
+        language: pygrep
+        types: [python]
+
+      # -------------------------------------------------------------- pre-push
+      - id: no-push-from-main
+        name: do not push from main (use a branch + PR)
+        entry: no-commit-to-branch --branch main --branch master
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1,0 +1,81 @@
+# CI for One Director: ruff -> mypy -> bandit -> pip-audit -> gitleaks -> pytest.
+#
+# Security notes:
+#   * Minimal token permissions (read-only contents), no secrets are used.
+#   * Actions are pinned to exact release tags. TODO before the pilot: replace
+#     tags with full commit SHAs (README, "CI and branch protection");
+#     Dependabot keeps both forms up to date.
+#   * Dependencies are installed only from the hash-locked file, --no-deps.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  # gitleaks is not on PyPI; the release archive is verified against the
+  # checksums published with the same release.
+  GITLEAKS_VERSION: "8.28.0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  checks:
+    name: lint, types, security, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (full history for gitleaks)
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install locked dependencies (hashes required)
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes --no-deps -r requirements-dev.txt
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Ruff (lint, incl. flake8-bandit)
+        run: |
+          ruff check --output-format=github .
+          ruff format --check .
+
+      - name: Mypy (strict, src/)
+        run: mypy
+
+      - name: Bandit
+        run: bandit -c pyproject.toml -r src
+
+      - name: pip-audit (known vulnerabilities in the lock files)
+        run: |
+          pip-audit --strict --progress-spinner off --disable-pip --require-hashes -r requirements.txt
+          pip-audit --strict --progress-spinner off --disable-pip --require-hashes -r requirements-dev.txt
+
+      - name: Gitleaks (secrets in the whole git history)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/$archive" "$base/$archive"
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/checksums.txt" "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          (cd "$RUNNER_TEMP" && grep " ${archive}\$" checksums.txt | sha256sum --check --strict -)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --verbose --exit-code 1 .
+
+      - name: Pytest
+        run: pytest

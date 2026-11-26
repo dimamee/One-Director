@@ -1,0 +1,39 @@
+# Dependabot: weekly update PRs. Every PR goes through CI and the reviewer
+# checklist (specs/agents/09-reviewer.md). "cooldown" delays freshly published
+# releases (supply-chain protection, same idea as --uploaded-prior-to in
+# requirements.in).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 14
+    labels: [dependencies]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "docker"

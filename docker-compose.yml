@@ -1,0 +1,73 @@
+# Local / demo deployment. Ports are bound to 127.0.0.1 only.
+# For the pilot: hosting in Uzbekistan, TLS reverse proxy, daily backups (README).
+name: one-director
+
+x-hardening: &hardening
+  read_only: true
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop: [ALL]
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *hardening
+    build: .
+    image: one-director:local
+    env_file:
+      - path: .env
+        required: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Processed data and the DuckDB file (incl. audit_log). Raw data is never
+      # mounted into the serving containers.
+      - ./data/processed:/app/data/processed
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+          pids: 256
+
+  dashboard:
+    <<: *hardening
+    image: one-director:local
+    depends_on:
+      api:
+        condition: service_healthy
+    # The dashboard has NO access to data files or secrets: it only talks to the
+    # API, so roles, masking and audit are enforced in one place.
+    environment:
+      API_BASE_URL: "http://api:8000"
+      DEMO_MODE: "true"
+    command:
+      - streamlit
+      - run
+      - app/main.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --server.enableXsrfProtection=true
+      - --browser.gatherUsageStats=false
+      - --global.developmentMode=false
+    ports:
+      - "127.0.0.1:8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+          pids: 128
