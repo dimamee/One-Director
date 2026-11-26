@@ -1,0 +1,59 @@
+# DEMO — не для продакшна.
+#
+# Демо-конфигурация признаков 03-screens: хакатон и тесты на синтетике.
+# Значения подобраны на синтетических рынках (tests/screens/) и НЕ являются
+# рекомендацией для реальных проверок. Пороги и веса продакшна хранятся у
+# комитета в файле по пути RISK_CONFIG_PATH вне репозитория
+# (docs/model-card.md §8, docs/threat-model.md T-04) и в коде не появляются.
+#
+# Каждый флаг записывает применённые значения в evidence.params и хеш этого
+# файла в rule_version ("<версия>+demo.<хеш>").
+
+mode = "demo"
+
+# D-6: ценовой блок (COVER_BID_PATTERN) выключен для сценария B (нет цен заявок).
+price_screens_enabled = false
+
+[screens.scope]
+# D-39: только конкурентные способы; список подтверждается к H+3.
+procedure_types = ["best_offer", "tender", "auction"]
+statuses = ["completed"]
+# Минимум вычислимых лотов в рынке (регион × категория) для нормировки.
+min_market_lots = 10
+
+[screens.low_discount]
+min_gap_to_market_median = 0.03
+max_discount = { low = 0.02, medium = 0.01, high = 0.005 }
+
+[screens.single_bidder]
+min_gap_to_market_median = { low = 1, medium = 2, high = 3 }
+
+[screens.few_bidders]
+max_participants = 2
+min_gap_to_market_median = { low = 2, medium = 3, high = 4 }
+
+[screens.co_bidding]
+min_joint_lots = 5
+min_overlap_share = 0.6
+min_lift = { low = 2, medium = 3, high = 4 }
+
+[screens.winner_rotation]
+min_scope_lots = 6
+min_wins_per_member = 3
+max_group_size = 4
+min_balance = 0.5
+min_switch_rate = 0.6
+min_lift_to_market_share = 3
+min_group_win_share = { low = 0.7, medium = 0.8, high = 0.9 }
+
+[screens.perpetual_runner_up]
+min_participations = 8
+max_win_rate = 0.1
+min_top_winner_share = 0.6
+max_ratio_to_expected_wins = { low = 0.3, medium = 0.15, high = 0.05 }
+
+[screens.cover_bid_pattern]
+min_losers = 3
+min_markup = 0.01
+min_gap_to_market_median = 0.2
+max_gap_cv = { low = 0.03, medium = 0.01, high = 0.005 }
