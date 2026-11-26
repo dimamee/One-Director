@@ -10,13 +10,19 @@ Rules shared by every row model:
 * columns are exactly the spec columns plus the technical ``collected_at`` and
   ``source`` ("Общие правила"); any other key is rejected (``extra="forbid"``),
   so fields such as ``founder`` / ``beneficiary`` can never reach a table;
-* strict types, no silent coercion: money is ``Decimal`` (never ``float``),
-  dates are ``date``, timestamps are timezone-aware ``datetime`` and are stored
-  in UTC, identifiers are strings. Raw platform values are converted by the
-  parser before a row is built; JSON input goes through ``model_validate_json``;
-* validation errors never echo the input value (``hide_input_in_errors``), so an
-  error can be logged or quarantined by field name without leaking an INN or a
-  name; use ``errors(include_input=False)`` for structured reasons;
+* strict types, no silent coercion: money is ``Decimal`` (never ``float``)
+  kept with the column scale of exactly 2 places (``1.5`` -> ``1.50``), dates
+  are ``date``, timestamps are timezone-aware ``datetime`` and are stored in
+  UTC, identifiers are strings. Raw platform values are converted by the parser
+  before a row is built; JSON input goes through ``model_validate_json``;
+* every bad value, including a timestamp with no UTC equivalent, fails as a
+  ``ValidationError``, so one bad record can be quarantined without aborting
+  the parse;
+* ``str(ValidationError)`` does not echo input values (``hide_input_in_errors``).
+  ``errors()`` and ``json()`` still include the raw ``input`` (an INN, a name)
+  by default: anything that logs or stores an error must call
+  ``errors(include_input=False, include_url=False)`` or
+  ``json(include_input=False)`` and keep field names and error types only;
 * rows are immutable;
 * source texts (``title``, ``*_name``, ``display_no``) are untrusted input: they
   are stored as is and escaped on output, never treated as instructions.
@@ -26,7 +32,7 @@ this module yet.
 """
 
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Context, Decimal
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
@@ -48,7 +54,28 @@ __all__ = [
 
 
 def _to_utc(value: datetime) -> datetime:
-    return value.astimezone(UTC)
+    try:
+        return value.astimezone(UTC)
+    except OverflowError:
+        # E.g. 0001-01-01T01:00:00+05:00 (a DateTime.MinValue placeholder) or
+        # 9999-12-31T23:00:00-05:00 has no UTC value in `datetime`. A ValueError
+        # becomes a ValidationError; the message never contains the value.
+        raise ValueError("timestamp is out of range after conversion to UTC") from None
+
+
+# DECIMAL(20, 2): 20 significant digits. Fixed here so that the result does not
+# depend on the caller's thread-local decimal context.
+_DECIMAL_20 = Context(prec=20)
+_CENT = Decimal("0.01")
+
+
+def _to_column_scale(value: Decimal) -> Decimal:
+    # The column has a fixed scale, so 1.5, 1.500, 0E-10 and 1E+5 come back from
+    # DuckDB as 1.50, 1.50, 0.00 and 100000.00. Rows use the same form, so the
+    # canonical JSON (facts_hash, evidence) does not change after a round trip.
+    # Nothing is rounded: more than 2 places were already rejected. copy_abs()
+    # only turns -0 (allowed by ge=0) into 0.
+    return value.quantize(_CENT, context=_DECIMAL_20).copy_abs()
 
 
 # Platform trade id: an integer kept as VARCHAR(32) (D-9).
@@ -56,12 +83,16 @@ TradeId = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,12}$")]
 # INN (STIR): VARCHAR(9), ASCII digits only.
 Inn = Annotated[str, StringConstraints(pattern=r"^[0-9]{9}$")]
 # DECIMAL(20, 2) in the row's `currency`; prices are >= 0 (specs/agents/01-data.md).
-Money = Annotated[Decimal, Field(ge=0, max_digits=20, decimal_places=2, allow_inf_nan=False)]
+Money = Annotated[
+    Decimal,
+    Field(ge=0, max_digits=20, decimal_places=2, allow_inf_nan=False),
+    AfterValidator(_to_column_scale),
+]
 # ISO 4217 alphabetic code, VARCHAR(3).
 CurrencyCode = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 # Computed link to the lot page, VARCHAR(500); documents are never downloaded.
 SourceUrl = Annotated[str, StringConstraints(max_length=500, pattern=r"^https://\S+$")]
-# TIMESTAMPTZ: timezone-aware, normalised to UTC.
+# TIMESTAMPTZ: timezone-aware, normalised to UTC; no UTC value -> ValidationError.
 UtcDatetime = Annotated[AwareDatetime, AfterValidator(_to_utc)]
 
 Source = Literal["etender", "registry", "committee"]

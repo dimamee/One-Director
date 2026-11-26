@@ -7,8 +7,9 @@ Two layers:
   ``collected_at`` / ``source``), the same nullability and the same type limits
   -- a model cannot silently drift from the spec or grow invented fields;
 * domain tests pin the value rules: identifier patterns, white lists, money as
-  ``Decimal`` (never float), UTC timestamps, strictness and no echo of input
-  values in validation errors.
+  ``Decimal`` (never float) with the column scale of 2, UTC timestamps (and a
+  ``ValidationError``, not a crash, for values outside the UTC range),
+  strictness and which error renderings do and do not echo input values.
 
 All data is synthetic (``tests/fixtures/README.md``): INNs start with ``000``,
 URLs point to ``example.invalid``. No network.
@@ -20,12 +21,12 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Literal, get_args, overload
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from one_director.data.schema import Bid, Lot, LotStatus, ProcedureType, Region, Source
 
@@ -35,7 +36,7 @@ SCHEMA_MD = Path(__file__).resolve().parents[2] / "specs" / "schema.md"
 # `collected_at TIMESTAMPTZ` and `source`; they are not repeated in the tables.
 TECHNICAL_COLUMNS = ("collected_at", "source")
 
-MODELS: dict[str, type[BaseModel]] = {"lots": Lot, "bids": Bid}
+MODELS: dict[str, type[Lot] | type[Bid]] = {"lots": Lot, "bids": Bid}
 
 COLLECTED_AT = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
 
@@ -83,7 +84,13 @@ def bid_data(**overrides: Any) -> dict[str, Any]:
 VALID: dict[str, Any] = {"lots": lot_data, "bids": bid_data}
 
 
-def build(table: str, **overrides: Any) -> BaseModel:
+@overload
+def build(table: Literal["lots"], **overrides: Any) -> Lot: ...
+@overload
+def build(table: Literal["bids"], **overrides: Any) -> Bid: ...
+@overload
+def build(table: str, **overrides: Any) -> Lot | Bid: ...
+def build(table: str, **overrides: Any) -> Lot | Bid:
     return MODELS[table].model_validate(VALID[table](**overrides))
 
 
@@ -232,7 +239,7 @@ def test_source_url_accepts_full_spec_length() -> None:
     assert length is not None
     prefix = "https://example.invalid/lot/"
     url = prefix + "1" * (length - len(prefix))
-    assert build("lots", source_url=url).source_url == url  # type: ignore[attr-defined]
+    assert build("lots", source_url=url).source_url == url
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +294,42 @@ def test_money_rejects_invalid(column: SpecColumn, value: object) -> None:
         build(column.table, **{column.name: value})
 
 
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    ("value", "canonical"),
+    [
+        (Decimal("1.5"), "1.50"),
+        (Decimal("1.500"), "1.50"),
+        (Decimal("1E+5"), "100000.00"),
+        (Decimal("0"), "0.00"),
+        (Decimal("0E-10"), "0.00"),
+        (Decimal("-0"), "0.00"),  # -0 == 0 passes ge=0, but must not keep its sign
+        (Decimal("-0.00"), "0.00"),
+        (Decimal("999999999999999999.99"), "999999999999999999.99"),
+    ],
+    ids=str,
+)
+def test_money_is_stored_with_the_column_scale(
+    column: SpecColumn, value: Decimal, canonical: str
+) -> None:
+    # DECIMAL(20, 2) has a fixed scale: DuckDB returns every one of these values
+    # with exactly two decimal places. The row must already look like that, or
+    # the same lot would give a different canonical JSON (facts_hash, evidence)
+    # before and after a trip through the table.
+    row = build(column.table, **{column.name: value})
+    money = getattr(row, column.name)
+    assert money == value
+    assert str(money) == canonical
+    assert money.as_tuple().exponent == -2
+    assert f'"{column.name}":"{canonical}"' in row.model_dump_json()
+
+
+def test_money_scale_does_not_depend_on_the_global_decimal_context() -> None:
+    with localcontext(prec=5):
+        lot = Lot.model_validate(lot_data(start_cost=Decimal("999999999999999999.99")))
+    assert str(lot.start_cost) == "999999999999999999.99"
+
+
 def test_money_survives_json_round_trip_exactly() -> None:
     lot = Lot.model_validate(lot_data(start_cost=Decimal("123456789012345678.99")))
     dumped = lot.model_dump_json()
@@ -316,7 +359,8 @@ TIMESTAMP_COLUMNS = [
 @pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
 def test_timestamps_reject_naive_datetime(column: SpecColumn) -> None:
     with pytest.raises(ValidationError):
-        build(column.table, **{column.name: datetime(2026, 5, 10, 9, 30)})  # noqa: DTZ001
+        naive = datetime(2026, 5, 10, 9, 30)  # noqa: DTZ001 -- naive on purpose: must be rejected
+        build(column.table, **{column.name: naive})
 
 
 @pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
@@ -327,6 +371,46 @@ def test_timestamps_are_normalised_to_utc(column: SpecColumn) -> None:
     assert value == datetime(2026, 5, 10, 9, 30, tzinfo=UTC)
     assert value.utcoffset() == timedelta(0)
     assert value.tzinfo is UTC
+
+
+# Aware timestamps that `datetime` cannot express in UTC (astimezone raises
+# OverflowError). The source is untrusted and 0001-01-01 is a common placeholder
+# (.NET DateTime.MinValue): such a row must fail with a ValidationError, so it is
+# quarantined like any other bad row, never with a bare OverflowError that
+# aborts the parse of the whole response.
+OUT_OF_UTC_RANGE = [
+    datetime(9999, 12, 31, 23, 0, tzinfo=timezone(timedelta(hours=-5))),
+    datetime(1, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=5))),
+]
+
+
+def assert_out_of_utc_range_error(error: ValidationError, name: str, raw: str) -> None:
+    assert [(e["type"], e["loc"]) for e in error.errors()] == [("value_error", (name,))]
+    for rendering in (str(error), error.json(include_input=False)):
+        assert raw not in rendering
+        assert raw[:10] not in rendering  # not even the date part
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize("value", OUT_OF_UTC_RANGE, ids=datetime.isoformat)
+def test_timestamp_outside_utc_range_is_a_validation_error(
+    column: SpecColumn, value: datetime
+) -> None:
+    with pytest.raises(ValidationError) as exc:
+        build(column.table, **{column.name: value})
+    assert_out_of_utc_range_error(exc.value, column.name, value.isoformat())
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize("value", OUT_OF_UTC_RANGE, ids=datetime.isoformat)
+def test_timestamp_outside_utc_range_in_json_is_a_validation_error(
+    column: SpecColumn, value: datetime
+) -> None:
+    data = build(column.table).model_dump(mode="json")
+    data[column.name] = value.isoformat()
+    with pytest.raises(ValidationError) as exc:
+        MODELS[column.table].model_validate_json(json.dumps(data))
+    assert_out_of_utc_range_error(exc.value, column.name, value.isoformat())
 
 
 def test_deal_date_is_a_date_not_a_datetime() -> None:
@@ -571,13 +655,40 @@ def test_validation_error_does_not_echo_input(table: str, name: str, value: str)
     assert value not in message
     assert name in message  # the field name is enough to quarantine with a reason
     assert all(value not in str(e) for e in exc.value.errors(include_input=False))
+    assert value not in exc.value.json(include_input=False)
+
+
+def test_structured_errors_echo_input_unless_asked_not_to() -> None:
+    # hide_input_in_errors only covers str(error). errors() and json() still
+    # carry the raw `input` (here an INN) by default, so anything that logs or
+    # stores them must pass include_input=False. This test pins that pydantic
+    # behaviour, so the warning in the schema docstring stays true.
+    inn = "00000000X"
+    with pytest.raises(ValidationError) as exc:
+        Bid.model_validate(bid_data(participant_inn=inn))
+    error = exc.value
+    assert inn not in str(error)
+    assert [e["input"] for e in error.errors()] == [inn]
+    assert inn in error.json()
+    safe = error.errors(include_input=False, include_url=False)
+    assert safe == [
+        {
+            "type": "string_pattern_mismatch",
+            "loc": ("participant_inn",),
+            "msg": "String should match pattern '^[0-9]{9}$'",
+            "ctx": {"pattern": "^[0-9]{9}$"},
+        }
+    ]
+    assert inn not in error.json(include_input=False)
 
 
 @pytest.mark.parametrize("table", MODELS)
 def test_rows_are_immutable(table: str) -> None:
     row = build(table)
-    with pytest.raises(ValidationError):
-        row.trade_id = "100002"  # type: ignore[attr-defined]
+    for name in MODELS[table].model_fields:
+        with pytest.raises(ValidationError) as exc:
+            setattr(row, name, getattr(row, name))
+        assert [e["type"] for e in exc.value.errors()] == ["frozen_instance"]
 
 
 @pytest.mark.parametrize(
