@@ -10,7 +10,11 @@
       "Bash(wget:*)",
       "Bash(sudo:*)",
       "Bash(rm -rf:*)",
-      "Bash(git push --force:*)"
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(gh api -X DELETE repos/dimamee/One-Director)",
+      "Bash(gh api --method DELETE repos/dimamee/One-Director)"
     ],
     "allow": [
       "Bash(pytest:*)",
