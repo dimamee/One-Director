@@ -11,8 +11,11 @@ Planned contract (docs/scraping-policy.md):
   notified (a block or a limit is a signal to stop, not to evade).
 * Response size limit (default 10 MB, streamed and cut off) and allowed
   content types (``application/json``).
-* Allowlist of hosts (``etender.uzex.uz`` and the agreed registry source);
-  redirects to other hosts are refused.
+* Allowlist of hosts: ``apietender.uzex.uz`` (the public JSON API used by the
+  etender.uzex.uz site -- the only host data is actually fetched from) and the
+  agreed registry source; redirects to other hosts are refused. The file host
+  ``etender-fileservice.uzex.uz`` is NOT allowed (no document downloads, see
+  specs/decisions.md D-29 and D-04).
 * Clear ``User-Agent`` with the project name and the team contact.
 * No cookies/sessions with credentials, no proxies rotation, no CAPTCHA
   solving, no header spoofing.

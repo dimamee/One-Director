@@ -8,7 +8,7 @@
 - `one_director.security.http_client` (Фаза 1) — единственный разрешённый способ ходить в сеть.
 
 **Выход:**
-- `src/one_director/data/schema.py` — pydantic-модели `Lot`, `Bid` (+ модели сырого ответа площадки).
+- `src/one_director/data/schema.py` — pydantic-модели **всех** таблиц `specs/schema.md`: `Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User` (+ модели сырого ответа площадки). Остальные агенты импортируют их отсюда (D-07).
 - `src/one_director/data/collect.py` — инкрементальный сборщик (CLI: период, категории, `--dry-run`), пишет сырые ответы в `data/raw/`.
 - `src/one_director/data/process.py` — разбор `data/raw/` → Parquet/DuckDB в `data/processed/`, карантин невалидных записей, удаление обработанного сырья.
 
@@ -19,6 +19,8 @@
 - [ ] Сырые файлы удаляются после успешной обработки; есть удаление по TTL 7 дней.
 - [ ] Ни одного прямого `httpx`/`requests`/`urllib` в модуле — только `security.http_client`.
 - [ ] ruff, mypy, bandit, pytest зелёные.
+
+**Источник и эндпоинты (D-29, D-39):** хост `apietender.uzex.uz`; только эндпоинты из `docs/scraping-policy.md` §4. `procedure_type` — из `GetTrade.type_name`. Поля `founder`/`beneficiary` из `DealsList` — только через `security.pseudonymize` в момент разбора (D-15), исходный текст на диск не пишется. Период по умолчанию — с 2025-01-01 (D-39).
 
 **Тесты:** `tests/data/` — разбор фикстур, валидация диапазонов (цены ≥ 0, ИНН `^[0-9]{9}$`, даты), карантин, неожиданные поля, идемпотентность, mock-транспорт для 429/403 (остановка), лимит частоты. Реальная сеть в тестах запрещена.
 
