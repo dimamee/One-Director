@@ -1,12 +1,12 @@
 # One Director — container image (API and dashboard share one image).
 #
 #   * slim base image with an exact tag; TODO before the pilot: pin by digest
-#     (python:3.11.x-slim-trixie@sha256:...), see README;
+#     (python:3.12.x-slim-trixie@sha256:...), see README;
 #   * multi-stage: build tools and pip caches stay in the builder stage;
 #   * dependencies only from the hash-locked requirements.txt, --no-deps;
 #   * runs as an unprivileged user, code is owned by root (read-only for app);
 #   * no secrets in the image: they arrive as environment variables at run time.
-ARG PYTHON_IMAGE=python:3.11.14-slim-trixie
+ARG PYTHON_IMAGE=python:3.12.12-slim-trixie
 
 # ---------------------------------------------------------------- builder ---
 FROM ${PYTHON_IMAGE} AS builder

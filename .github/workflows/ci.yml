@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   # gitleaks is not on PyPI; the release archive is verified against the
   # checksums published with the same release.
   GITLEAKS_VERSION: "8.28.0"

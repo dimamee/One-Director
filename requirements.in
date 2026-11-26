@@ -22,9 +22,9 @@ pyarrow==26.0.1              # Parquet storage
 pandas==3.1.1                # tabular processing
 
 # --- Features, graph, model --------------------------------------------------
-networkx==3.6.1              # firm/person relationship graph (3.7+ requires Python 3.12)
+networkx==3.7                # firm/person relationship graph
 scikit-learn==1.9.1          # Isolation Forest
-shap==0.51.0                 # risk score explanations (0.52+ requires Python 3.12)
+shap==0.54.1                 # risk score explanations
 
 # --- Configuration, validation ----------------------------------------------
 pydantic==2.14.3             # schemas for inputs, API, LLM output
@@ -41,13 +41,6 @@ streamlit==1.67.0            # inspector dashboard
 plotly==7.1.0                # charts and regional map
 pyvis==0.3.2                 # interactive graph view (labels MUST be escaped)
 reportlab==5.1.0             # PDF export (no external resources)
-
-# --- Python 3.11 compatibility caps for transitive dependencies -------------
-# The target runtime is Python 3.11 (Dockerfile, CI). These caps keep the lock
-# installable on 3.11 even when it is compiled on a newer interpreter. Remove
-# them when the project moves to Python 3.12 (see README, "Python version").
-numpy<2.5                    # via pandas, scikit-learn, shap; 2.5+ requires 3.12
-scipy<1.18                   # via scikit-learn, shap; 1.18+ requires 3.12
 
 # --- LLM ---------------------------------------------------------------------
 anthropic==2.8.0             # official Claude SDK for lot briefs (docs/llm-safety.md)

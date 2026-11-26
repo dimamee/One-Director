@@ -34,10 +34,10 @@ notebooks/           исследования
 
 ## Быстрый старт (локально)
 
-Требуется Python 3.11 (целевая версия; 3.12 тоже поддерживается для разработки).
+Требуется Python 3.12.
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --require-hashes -r requirements-dev.txt
 pytest
@@ -83,18 +83,9 @@ pip-audit --strict --disable-pip --require-hashes -r requirements-dev.txt
 
 ### Версия Python
 
-Целевая версия — **3.11** (Dockerfile, CI). Научный стек уже отказывается от 3.11: networkx ≥ 3.7, numpy ≥ 2.5, scipy ≥ 1.18, shap ≥ 0.52 требуют Python 3.12. Поэтому в `requirements.in` есть ограничения `numpy<2.5`, `scipy<1.18`, а shap и networkx закреплены на последних версиях с поддержкой 3.11 (shap 0.51 дополнительно тянет numba и llvmlite).
+Проект работает на **Python 3.12** — локально, в CI и в образе Docker (`pyproject.toml`: `requires-python = ">=3.12,<3.13"`). Решение принято командой: научный стек уже отказался от 3.11 (networkx ≥ 3.7, numpy ≥ 2.5, scipy ≥ 1.18, shap ≥ 0.52 требуют 3.12).
 
-Lock-файлы при бутстрапе собраны на Python 3.12 (3.11 на машине не было) и проверены на устанавливаемость под 3.11:
-
-```bash
-pip install --dry-run --ignore-installed --require-hashes --only-binary=:all: \
-  --python-version 3.11 --implementation cp \
-  --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 \
-  --target /tmp/py311-check -r requirements-dev.txt
-```
-
-Лучше собирать lock прямо на 3.11 (например, в контейнере `python:3.11-slim`). Переход на 3.12 — открытый вопрос команды: он снимает ограничения выше и убирает numba/llvmlite.
+Lock-файлы собираются на 3.12, той же минорной версией, что в CI и Docker. Переход на 3.13 — отдельным PR: обновить `requires-python`, `target-version` ruff, `python_version` mypy, `PYTHON_VERSION` в CI, базовый образ Docker и пересобрать lock-файлы.
 
 ## CI и защита ветки main
 

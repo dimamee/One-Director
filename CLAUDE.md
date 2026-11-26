@@ -15,7 +15,7 @@
 
 ## Стек
 
-Python 3.11 · httpx · DuckDB + Parquet (pyarrow) · pandas · networkx · scikit-learn · shap · pydantic v2 + pydantic-settings · FastAPI + uvicorn · Streamlit · plotly · pyvis · reportlab · anthropic (официальный SDK) · PyJWT · argon2-cffi · pytest.
+Python 3.12 · httpx · DuckDB + Parquet (pyarrow) · pandas · networkx · scikit-learn · shap · pydantic v2 + pydantic-settings · FastAPI + uvicorn · Streamlit · plotly · pyvis · reportlab · anthropic (официальный SDK) · PyJWT · argon2-cffi · pytest.
 Инструменты: ruff, mypy, bandit, pip-audit, pip-tools, pre-commit, gitleaks.
 Новая зависимость — только с обоснованием в PR, с фиксированной версией и хешами (`requirements.in` → `pip-compile`, см. README).
 

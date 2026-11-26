@@ -10,13 +10,13 @@ name = "one-director"
 version = "0.0.0"
 description = "Screening of possible bid-rigging indicators in public procurement of Uzbekistan"
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 
 # ---------------------------------------------------------------------------
 # Ruff: lint + format. "S" = flake8-bandit security rules.
 # ---------------------------------------------------------------------------
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 extend-exclude = ["data", "notebooks"]
@@ -59,7 +59,7 @@ mark-parentheses = false
 # Mypy: strict for src/.
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 mypy_path = "src"
 packages = ["one_director"]
 strict = true
