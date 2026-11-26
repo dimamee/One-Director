@@ -37,7 +37,7 @@
 | `currency` | VARCHAR(3) | нет | etender | public | ISO 4217, обычно `UZS` |
 | `deal_date` | DATE | да | etender | public | дата сделки |
 | `region` | VARCHAR(64) | да | etender → нормализация | public | код региона (белый список) |
-| `participants_count` | SMALLINT | да | etender / computed из `bids` | public | число участников |
+| `participants_count` | SMALLINT | да | etender | public | число участников по данным площадки; **не пересчитывается из `bids`** — расхождение с числом записей в `bids` нужно видеть (R2, `specs/agents/04-graph.md`) |
 | `status` | VARCHAR(32) | нет | etender → нормализация | public | `completed` / `cancelled` / `failed` / `other` |
 | `source_url` | VARCHAR(500) | нет | computed | public | ссылка на страницу лота (документы не скачиваются) |
 
@@ -51,8 +51,9 @@
 | `is_winner` | BOOLEAN | нет | etender | public | победитель |
 | `bid_price` | DECIMAL(20,2) | **да** | etender | public | цена заявки; может быть недоступна |
 | `submitted_at` | TIMESTAMPTZ | **да** | etender | public | время подачи; может быть недоступно |
+| `participant_status` | VARCHAR(32) *(тип уточнить)* | **да** | etender → нормализация | public | *предложение*: статус записи `GetProposalUsers` (заявка / отзыв / допуск / отклонение — значения пока неизвестны). **Ждём ответа UZEX/RTAM, что означают лишние записи в `GetProposalUsers`** (R2). До ответа — `null`; граф соучастия строится по правилу из `specs/agents/04-graph.md` |
 
-PK: (`trade_id`, `participant_inn`).
+PK: (`trade_id`, `participant_inn`). Открытый вопрос (R2): если лишние записи `GetProposalUsers` — повторные записи того же ИНН (например, отзыв и новая подача), этот PK не подойдёт; решение — после ответа UZEX/RTAM, отдельным PR.
 
 ## `firms` — фирмы (только участники флагнутых лотов)
 
@@ -94,6 +95,8 @@ PK: (`person_id`, `firm_inn`, `role`). Поля `firms.director_person_id` / `fo
 | `evidence` | JSON | нет | computed | sensitive | воспроизводимые факты: ID лотов, значения, `rule_version`, `match_basis`; без ФИО |
 | `rule_version` | VARCHAR(32) | нет | computed | sensitive | версия правила |
 | `created_at` | TIMESTAMPTZ | нет | computed | sensitive | |
+
+Значения `evidence.match_basis` для слабых совпадений: `name_hash_only` — совпадение только по ФИО (`docs/model-card.md`); `via_intermediary` — общий контакт через узел-посредник (R1, `specs/agents/04-graph.md`). Детектор посредников новых колонок не требует.
 
 ## `risk_scores` — риск-скоры
 
@@ -154,3 +157,5 @@ PK: (`object_type`, `object_id`, `model_version`). Старые версии н�
 ## Чего в схеме нет намеренно
 
 ФИО людей, паспортные данные, ПИНФЛ, личные телефоны и домашние адреса физлиц, e-mail, документы и договоры, IP в открытом виде, значения секретов.
+
+**Открытый вопрос: e-mail и IP подачи заявок.** Сейчас не собираются. Если комитет или RTAM официально даст эти поля, они добавляются отдельным PR только как HMAC-хеши и сразу как слабый признак (R1, правило в `CLAUDE.md`, `specs/agents/04-graph.md`).
