@@ -1,0 +1,46 @@
+# Runtime dependencies of One Director (direct dependencies only).
+#
+# Rules (see CLAUDE.md, section "Security"):
+#   * Every direct dependency is pinned with "==". Transitive ones are pinned
+#     in requirements.txt together with sha256 hashes.
+#   * A new package is added only with a written justification in the PR
+#     (protection against typosquatting and malicious packages).
+#   * Lock files are rebuilt with a release-age cutoff (supply-chain cooldown):
+#
+#     pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#         --uploaded-prior-to <today minus 14 days, ISO 8601> \
+#         -o requirements.txt requirements.in
+#
+#     Current cutoff: 2026-11-12T00:00:00Z.
+
+# --- Data collection ---------------------------------------------------------
+httpx==0.28.1                # HTTP client for the scraper (timeouts, TLS, limits)
+
+# --- Storage and processing --------------------------------------------------
+duckdb==2.0.0                # embedded analytical SQL DB (parameterised queries)
+pyarrow==26.0.1              # Parquet storage
+pandas==3.1.1                # tabular processing
+
+# --- Features, graph, model --------------------------------------------------
+networkx==3.7                # firm/person relationship graph
+scikit-learn==1.9.1          # Isolation Forest
+shap==0.54.1                 # risk score explanations
+
+# --- Configuration, validation ----------------------------------------------
+pydantic==2.14.3             # schemas for inputs, API, LLM output
+pydantic-settings==2.16.2    # settings and secrets from environment
+
+# --- API ---------------------------------------------------------------------
+fastapi==0.162.5             # REST API
+uvicorn==0.54.0              # ASGI server (without [standard] extras on purpose)
+PyJWT==2.15.1                # short-lived JWT access tokens (docs/access-control.md)
+argon2-cffi==25.1.0          # password hashing (argon2id)
+
+# --- Dashboard and reports ---------------------------------------------------
+streamlit==1.67.0            # inspector dashboard
+plotly==7.1.0                # charts and regional map
+pyvis==0.3.2                 # interactive graph view (labels MUST be escaped)
+reportlab==5.1.0             # PDF export (no external resources)
+
+# --- LLM ---------------------------------------------------------------------
+anthropic==2.8.0             # official Claude SDK for lot briefs (docs/llm-safety.md)

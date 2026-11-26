@@ -1,0 +1,28 @@
+# Development and CI tools. Installs the full runtime set as well, so that
+# `pip install -r requirements-dev.txt` is enough for a working dev env.
+#
+# "-c requirements.txt" keeps shared transitive pins identical to the runtime
+# lock. Rebuild AFTER requirements.txt with the same cutoff:
+#
+#     pip-compile --generate-hashes --allow-unsafe --strip-extras \
+#         --uploaded-prior-to <same cutoff> \
+#         -o requirements-dev.txt requirements-dev.in
+
+-c requirements.txt
+-r requirements.in
+
+# --- Tests -------------------------------------------------------------------
+pytest==9.2.0
+
+# --- Static analysis ---------------------------------------------------------
+ruff==0.17.4                 # lint + format, includes flake8-bandit (S) rules
+mypy==2.4.1                  # type checking of src/
+bandit==1.9.4                # security linter
+
+# --- Supply chain ------------------------------------------------------------
+pip-audit==2.10.1            # known-vulnerability scan of the lock files
+pip-tools==7.6.2             # pip-compile with --generate-hashes
+
+# --- Git hooks ---------------------------------------------------------------
+pre-commit==4.7.0            # hook runner (all hooks are "repo: local")
+pre-commit-hooks==6.0.0      # detect-private-key, check-yaml, etc. (from PyPI)
