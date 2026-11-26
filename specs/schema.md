@@ -11,7 +11,7 @@
 
 Пайплайн и API могут работать одновременно. Пайплайн пересобирает `one_director.duckdb` во временный файл и подменяет его атомарно; API переоткрывает соединение при следующем запросе.
 
-**Pydantic-модели всех таблиц** (`Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`) реализует 01-data в `src/one_director/data/schema.py` (решение D-07). Остальные агенты импортируют модели оттуда и не описывают таблицы заново.
+**Pydantic-модели всех таблиц** (`Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`) реализует 01-data в `src/one_director/data/schema.py` (решение D-7). Остальные агенты импортируют модели оттуда и не описывают таблицы заново.
 
 ## Классы чувствительности
 
@@ -28,9 +28,9 @@
 
 - Все времена — `TIMESTAMPTZ` в UTC; даты — `DATE`.
 - Денежные суммы — `DECIMAL(20, 2)` в валюте `currency` (не float).
-- ИНН (STIR) — `VARCHAR(9)`, только цифры, валидируется регуляркой `^[0-9]{9}$`. `trade_id` — целое число площадки (например, `524614`), хранится как `VARCHAR(32)`, валидируется `^[0-9]{1,12}$` (решение D-09; при нецифровом значении в фикстурах — PR в этот файл).
+- ИНН (STIR) — `VARCHAR(9)`, только цифры, валидируется регуляркой `^[0-9]{9}$`. `trade_id` — целое число площадки (например, `524614`), хранится как `VARCHAR(32)`, валидируется `^[0-9]{1,12}$` (решение D-9; при нецифровом значении в фикстурах — PR в этот файл).
 - Текстовые поля из источника (`title`, `*_name`) — **недоверенный ввод**: хранятся как есть, экранируются при выводе, не передаются в LLM как инструкции.
-- Каждая таблица, наполняемая из источника, имеет технические поля `collected_at TIMESTAMPTZ` и `source` (`etender` / `registry` / `committee` — последний только для официально переданного датасета комитета/RTAM, D-04) — в таблицах ниже не повторяются.
+- Каждая таблица, наполняемая из источника, имеет технические поля `collected_at TIMESTAMPTZ` и `source` (`etender` / `registry` / `committee` — последний только для официально переданного датасета комитета/RTAM, D-4) — в таблицах ниже не повторяются.
 - Источник `computed` — значение вычисляется нашим кодом.
 
 ## `lots` — лоты и сделки
@@ -48,7 +48,7 @@
 | `deal_cost` | DECIMAL(20,2) | да | etender | public | цена сделки/договора (нет у несостоявшихся) |
 | `currency` | VARCHAR(3) | нет | etender | public | ISO 4217, обычно `UZS` |
 | `deal_date` | DATE | да | etender | public | дата сделки |
-| `region` | VARCHAR(64) | да | etender → нормализация | public | код региона, белый список (D-08): `tashkent_city`, `tashkent_region`, `andijan`, `bukhara`, `fergana`, `jizzakh`, `khorezm`, `namangan`, `navoi`, `kashkadarya`, `samarkand`, `syrdarya`, `surkhandarya`, `karakalpakstan` |
+| `region` | VARCHAR(64) | да | etender → нормализация | public | код региона, белый список (D-8): `tashkent_city`, `tashkent_region`, `andijan`, `bukhara`, `fergana`, `jizzakh`, `khorezm`, `namangan`, `navoi`, `kashkadarya`, `samarkand`, `syrdarya`, `surkhandarya`, `karakalpakstan` |
 | `participants_count` | SMALLINT | да | etender | public | число участников по данным площадки; **не пересчитывается из `bids`** — расхождение с числом записей в `bids` нужно видеть (R2, `specs/agents/04-graph.md`) |
 | `status` | VARCHAR(32) | нет | etender → нормализация | public | `completed` / `cancelled` / `failed` / `other` |
 | `source_url` | VARCHAR(500) | нет | computed | public | ссылка на страницу лота (документы не скачиваются) |

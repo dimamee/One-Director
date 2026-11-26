@@ -1,6 +1,6 @@
 # Контракт API
 
-Версия 0.2 (решения D-17, D-18, D-12, D-09 из `specs/decisions.md`). Реализует 07-backend (`src/one_director/api/`). Роли и матрица — `docs/access-control.md`; классы полей — `specs/schema.md`.
+Версия 0.2 (решения D-17, D-18, D-12, D-9 из `specs/decisions.md`). Реализует 07-backend (`src/one_director/api/`). Роли и матрица — `docs/access-control.md`; классы полей — `specs/schema.md`.
 
 ## Общие правила
 
@@ -23,7 +23,7 @@
 - **Заголовки безопасности** на всех ответах: `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` (для данных), `Strict-Transport-Security: max-age=31536000` (только при HTTPS). CORS — только `ALLOWED_ORIGINS`, методы `GET, POST`, без `credentials` для чужих origin.
 - **Логи:** access log uvicorn выключен; middleware пишет `request_id`, метод, шаблон маршрута (`/firms/{firm_ref}`, без значения), статус, длительность, `ip_hash`.
 - **Идентификатор фирмы в API — `firm_ref`, а не ИНН** (решение D-17). `firm_ref = "F-" + первые 16 hex HMAC-SHA256(PSEUDONYM_SALT, "firm:" + inn)`, шаблон `^F-[0-9a-f]{16}$`. Вычисляется в `security.pseudonymize` (Фаза 1). ИНН никогда не попадает в URL; `firm_ref` одинаков во всех режимах, в том числе в `DEMO_MODE`, поэтому из замаскированной карточки лота можно перейти к карточке фирмы и графу. Класс `firm_ref` — `personal` (псевдоним): не логируется значением, в audit_log пишется как `object_id`.
-- **Формат `trade_id`** (решение D-09): по ответам API площадки это целое число (например, `524614`); шаблон `^[0-9]{1,12}$`.
+- **Формат `trade_id`** (решение D-9): по ответам API площадки это целое число (например, `524614`); шаблон `^[0-9]{1,12}$`.
 - **Документация OpenAPI** (`/docs`, `/openapi.json`) включена только при `APP_ENV=local`.
 
 ### Формат ошибки
@@ -111,7 +111,7 @@ FastAPI-ответ `422` с деталями валидации **переопр
 Карточка лота.
 
 - **Роль:** `analyst`, `supervisor`.
-- **Путь:** `trade_id` — `^[0-9]{1,12}$` (D-09).
+- **Путь:** `trade_id` — `^[0-9]{1,12}$` (D-9).
 - **Query:** `unmask` bool (по умолчанию `false`; только `supervisor` вне `DEMO_MODE`), `reason` str 10–200 (обязателен при `unmask=true`).
 - **Ответ `200`:** поля лота из `lots`; `participants`: `[{"ref": "P1", "firm_ref": "F-…", "inn": "*********" | "…", "name": "ООО «А»" | "ИП ***" | "…", "entity_type", "is_winner", "bid_price", "risk": {...}}]`; `flags`: `[{flag_code, severity, evidence, rule_version}]` (evidence с замаскированными идентификаторами); `risk`; `brief`: `{"ru": …, "uz": …, "legal_refs": [{id, text_ru, text_uz}], "source": "llm" | "template", "prompt_version", "model"}` или `null`; `disclaimer`: фиксированный текст ru/uz.
 - **Ошибки:** `400`, `401`, `403` (в т. ч. `unmask` без прав или в `DEMO_MODE`), `404`, `429`.
