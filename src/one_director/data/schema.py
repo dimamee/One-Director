@@ -1,4 +1,4 @@
-"""Row models of the ``lots`` and ``bids`` tables (owner: 01-data).
+"""Row models of the ``lots``, ``bids`` and ``flags`` tables (owner: 01-data).
 
 Source of truth: ``specs/schema.md`` (version 0.3). Change the spec first, then
 this module; ``tests/data/test_schema.py`` reads the column tables from the spec
@@ -7,17 +7,19 @@ and fails if the models drift from it. Other agents import the models from here
 
 Rules shared by every row model:
 
-* columns are exactly the spec columns plus the technical ``collected_at`` and
-  ``source`` ("Общие правила"); any other key is rejected (``extra="forbid"``),
-  so fields such as ``founder`` / ``beneficiary`` can never reach a table;
+* columns are exactly the spec columns, plus the technical ``collected_at`` and
+  ``source`` for a table filled from a source ("Общие правила": ``lots``,
+  ``bids``; ``flags`` is computed and has none); any other key is rejected
+  (``extra="forbid"``), so fields such as ``founder`` / ``beneficiary`` can
+  never reach a table;
 * strict types, no silent coercion: money is ``Decimal`` (never ``float``)
   kept with the column scale of exactly 2 places (``1.5`` -> ``1.50``), dates
   are ``date``, timestamps are timezone-aware ``datetime`` and are stored in
   UTC, identifiers are strings. Raw platform values are converted by the parser
   before a row is built (``model_validate`` takes Python objects only);
 * JSON input (``model_validate_json``; ``model_validate_strings`` follows the
-  same rules) is our own JSON -- the form ``model_dump_json`` writes -- and is
-  read without any lossy step:
+  same rules for the scalar columns) is our own JSON -- the form
+  ``model_dump_json`` writes -- and is read without any lossy step:
 
   - money (D-42) is a string with exactly 2 places after the point, as DuckDB
     returns ``DECIMAL(20, 2)``: ``"196510000.00"``. ASCII digits, no sign, no
@@ -47,14 +49,39 @@ Open gaps of ``lots`` / ``bids`` keep the current behaviour until the answers
 ``9999-12-31``) pass, cross-field rules (``completed`` => ``deal_cost``,
 ``deal_cost <= start_cost``) are not checked.
 
+``flags`` (a flag is an indicator for review, never a finding) adds:
+
+* ``flag_code`` is a code of ``docs/model-card.md`` §3 and is written only for
+  the level of that code (:data:`FLAG_OBJECT_TYPES`; a group-level screen is
+  one ``firm`` flag per member, D-44). ``object_id`` has the format of its
+  ``object_type``: ``trade_id``, ``inn`` or ``inn1:inn2`` with ``inn1 < inn2``;
+* ``evidence`` is a non-empty JSON object of exact JSON values: strings,
+  integers, booleans, null, lists, objects -- no floats anywhere, because
+  money in evidence is a string with 2 places (D-42) and a number cannot be
+  told from an amount here. INN keys follow D-46: under a key ending with
+  ``_inn`` only an INN or null, under ``_inns`` only a list of INNs, no
+  INN-like key without that suffix; applied thresholds are only under the
+  top-level ``params`` object (07 never returns it); ``match_basis`` is a
+  weak-signal value of the spec or null; no full 64-hex hashes (person_id,
+  address / phone hashes). Nesting is limited to :data:`EVIDENCE_MAX_DEPTH`.
+  Errors name the rule, never a key or a value of the evidence. Not
+  detectable here: an INN under another key (a 9-digit ``trade_id`` looks the
+  same), an amount written as an integer, names. The JSON column comes back
+  from DuckDB as text: parse it (``json.loads``) before ``model_validate``;
+* ``evidence`` is validated into a new dict (no container is shared with the
+  input). The row cannot be reassigned, but the dict itself is mutable: do not
+  change it.
+
 Models of the other tables and of the raw platform responses are not part of
 this module yet.
 """
 
 import re
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Context, Decimal
-from typing import Annotated, Literal
+from types import MappingProxyType
+from typing import Annotated, Final, Literal, get_args
 
 from pydantic import (
     AfterValidator,
@@ -65,17 +92,29 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationInfo,
+    field_validator,
 )
 
 __all__ = [
+    "EVIDENCE_MAX_DEPTH",
+    "FLAG_OBJECT_TYPES",
     "Bid",
     "CurrencyCode",
+    "Evidence",
+    "EvidenceValue",
+    "Flag",
+    "FlagCode",
+    "FlagId",
+    "FlagObjectType",
     "Inn",
     "Lot",
     "LotStatus",
+    "MatchBasis",
     "Money",
     "ProcedureType",
     "Region",
+    "RuleVersion",
+    "Severity",
     "Source",
     "SourceUrl",
     "TradeId",
@@ -153,10 +192,15 @@ def _money_from_json(value: object, info: ValidationInfo) -> object:
     return Decimal(value)
 
 
+# Identifier patterns. pydantic matches them as given; Python code uses
+# re.fullmatch with the same text, so a trailing newline never passes `$`.
+_TRADE_ID_PATTERN = r"^[0-9]{1,12}$"
+_INN_PATTERN = r"^[0-9]{9}$"
+
 # Platform trade id: an integer kept as VARCHAR(32) (D-9).
-TradeId = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,12}$")]
+TradeId = Annotated[str, StringConstraints(pattern=_TRADE_ID_PATTERN)]
 # INN (STIR): VARCHAR(9), ASCII digits only.
-Inn = Annotated[str, StringConstraints(pattern=r"^[0-9]{9}$")]
+Inn = Annotated[str, StringConstraints(pattern=_INN_PATTERN)]
 # DECIMAL(20, 2) in the row's `currency`, >= 0 (specs/schema.md, "Общие правила").
 # Validators run outside-in: the JSON check first, then the Decimal constraints,
 # then the column scale.
@@ -247,3 +291,218 @@ class Bid(_Row):
     participant_status: None = None
     collected_at: UtcDatetime
     source: Source
+
+
+# --------------------------------------------------------------------------- flags
+
+# Codes of docs/model-card.md §3 (a new code -- e.g. the price screens of D-5 --
+# needs a PR there and in the glossary first; tests/data reads the table).
+FlagCode = Literal[
+    "LOW_DISCOUNT",
+    "SINGLE_BIDDER",
+    "FEW_BIDDERS",
+    "CO_BIDDING",
+    "WINNER_ROTATION",
+    "PERPETUAL_RUNNER_UP",
+    "SHARED_FOUNDER",
+    "SHARED_DIRECTOR",
+    "SHARED_ADDRESS",
+    "SHARED_PHONE",
+    "COVER_BID_PATTERN",
+]
+FlagObjectType = Literal["lot", "firm", "pair"]
+Severity = Literal["low", "medium", "high"]
+# Values of evidence.match_basis for weak matches (specs/schema.md -> flags).
+MatchBasis = Literal["name_hash_only", "via_intermediary"]
+
+# The object_type each code is written for: the level in docs/model-card.md §3.
+# A group-level screen (WINNER_ROTATION) is one `firm` flag per member of the
+# group, with the same evidence and `group_inns` (D-44).
+FLAG_OBJECT_TYPES: Final[Mapping[FlagCode, FlagObjectType]] = MappingProxyType(
+    {
+        "LOW_DISCOUNT": "lot",
+        "SINGLE_BIDDER": "lot",
+        "FEW_BIDDERS": "lot",
+        "CO_BIDDING": "pair",
+        "WINNER_ROTATION": "firm",
+        "PERPETUAL_RUNNER_UP": "firm",
+        "SHARED_FOUNDER": "pair",
+        "SHARED_DIRECTOR": "pair",
+        "SHARED_ADDRESS": "pair",
+        "SHARED_PHONE": "pair",
+        "COVER_BID_PATTERN": "lot",
+    }
+)
+
+# UUID as text, VARCHAR(36): the canonical lower-case form `str(uuid.UUID)`
+# writes. Another case or layout of the same UUID would be another primary key.
+FlagId = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"),
+]
+# VARCHAR(32), a computed identifier: printable ASCII without spaces
+# ("1.0.0+demo.c2fb9a07"), never empty.
+RuleVersion = Annotated[str, StringConstraints(min_length=1, max_length=32, pattern=r"^[!-~]+$")]
+
+type EvidenceValue = str | int | bool | list[EvidenceValue] | dict[str, EvidenceValue] | None
+"""A value inside ``flags.evidence``: exact JSON, no floats (D-42)."""
+
+type Evidence = dict[str, EvidenceValue]
+"""``flags.evidence``: a JSON object."""
+
+# The top-level object has depth 1; 03-screens' deepest evidence has depth 4.
+# The limit keeps errors as one ValidationError at `evidence` (pydantic's own
+# recursion limit would report a location built from the evidence keys).
+EVIDENCE_MAX_DEPTH: Final = 16
+
+_INN_KEY_SUFFIX = "_inn"
+_INNS_KEY_SUFFIX = "_inns"
+_PARAMS_KEY = "params"
+_MATCH_BASIS_KEY = "match_basis"
+_MATCH_BASIS_VALUES: Final = frozenset(get_args(MatchBasis))
+_SCALAR_TYPES: Final = (str, int, bool, type(None))
+# 64 hex digits: a whole HMAC-SHA256 pseudonym (person_id, address / phone hash).
+_FULL_HASH = re.compile(r"[0-9a-fA-F]{64}")
+
+_EVIDENCE_OBJECT_ERROR = "evidence must be a non-empty JSON object"
+_EVIDENCE_JSON_ERROR = (
+    "evidence values must be exact JSON: string, integer, boolean, null, list or object "
+    "with string keys; no floats (money is a string with 2 decimal places, D-42)"
+)
+_EVIDENCE_DEPTH_ERROR = f"evidence is nested deeper than {EVIDENCE_MAX_DEPTH} levels"
+_INN_VALUE_ERROR = "evidence: a key ending with _inn holds one INN (9 digits) or null (D-46)"
+_INNS_VALUE_ERROR = "evidence: a key ending with _inns holds a list of INNs (9 digits) (D-46)"
+_INN_KEY_ERROR = "evidence: INNs only under keys ending with _inn or _inns, lower case (D-46)"
+_PARAMS_ERROR = "evidence: applied thresholds only under a top-level 'params' object (D-46)"
+_MATCH_BASIS_ERROR = "evidence: match_basis is name_hash_only, via_intermediary or null"
+_FULL_HASH_ERROR = "evidence must not contain a full 64-hex hash (person_id, address/phone hash)"
+
+
+def _is_inn(value: object) -> bool:
+    return type(value) is str and re.fullmatch(_INN_PATTERN, value) is not None
+
+
+def _is_match_basis(value: object) -> bool:
+    # `in` on a frozenset hashes the value: only a str gets that far.
+    return type(value) is str and value in _MATCH_BASIS_VALUES
+
+
+def _check_evidence_key(key: object, depth: int) -> str:
+    if type(key) is not str:
+        raise ValueError(_EVIDENCE_JSON_ERROR)
+    if _FULL_HASH.search(key):
+        raise ValueError(_FULL_HASH_ERROR)
+    if key == _PARAMS_KEY and depth > 1:
+        raise ValueError(_PARAMS_ERROR)
+    if key.lower().endswith(("inn", "inns")) and not key.endswith(
+        (_INN_KEY_SUFFIX, _INNS_KEY_SUFFIX)
+    ):
+        raise ValueError(_INN_KEY_ERROR)
+    return key
+
+
+def _check_evidence_entry(key: str, value: object) -> None:
+    if key.endswith(_INN_KEY_SUFFIX):
+        if value is not None and not _is_inn(value):
+            raise ValueError(_INN_VALUE_ERROR)
+    elif key.endswith(_INNS_KEY_SUFFIX):
+        if type(value) is not list or not all(_is_inn(item) for item in value):
+            raise ValueError(_INNS_VALUE_ERROR)
+    elif key == _MATCH_BASIS_KEY and not (value is None or _is_match_basis(value)):
+        raise ValueError(_MATCH_BASIS_ERROR)
+
+
+def _check_evidence(value: object) -> object:
+    """Shape and conventions of ``flags.evidence`` (Python and JSON input alike).
+
+    Runs before pydantic's own validation of :data:`Evidence`, so a bad value
+    gives one error at ``evidence`` with a fixed message. Exact built-in types
+    only: a ``float``, ``Decimal``, tuple or ``str`` / ``int`` subclass (an enum)
+    would not come back the same from the JSON column. The walk is iterative.
+    """
+    if type(value) is not dict or not value:
+        raise ValueError(_EVIDENCE_OBJECT_ERROR)
+    if _PARAMS_KEY in value and type(value[_PARAMS_KEY]) is not dict:
+        raise ValueError(_PARAMS_ERROR)
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if type(node) is dict:
+            if depth > EVIDENCE_MAX_DEPTH:
+                raise ValueError(_EVIDENCE_DEPTH_ERROR)
+            for raw_key, item in node.items():
+                key = _check_evidence_key(raw_key, depth)
+                _check_evidence_entry(key, item)
+                stack.append((item, depth + 1))
+        elif type(node) is list:
+            if depth > EVIDENCE_MAX_DEPTH:
+                raise ValueError(_EVIDENCE_DEPTH_ERROR)
+            stack.extend((item, depth + 1) for item in node)
+        elif type(node) not in _SCALAR_TYPES:
+            raise ValueError(_EVIDENCE_JSON_ERROR)
+        elif type(node) is str and _FULL_HASH.search(node):
+            raise ValueError(_FULL_HASH_ERROR)
+    return value
+
+
+def _is_trade_id(value: str) -> bool:
+    return re.fullmatch(_TRADE_ID_PATTERN, value) is not None
+
+
+def _is_pair(value: str) -> bool:
+    # "inn1:inn2", sorted (specs/schema.md); a firm is not a pair with itself.
+    first, separator, second = value.partition(":")
+    return bool(separator) and _is_inn(first) and _is_inn(second) and first < second
+
+
+# object_type -> (check of object_id, fixed error message).
+_OBJECT_ID_RULES: Final[Mapping[str, tuple[Callable[[str], bool], str]]] = MappingProxyType(
+    {
+        "lot": (_is_trade_id, "object_id of a lot must be a trade_id (1-12 digits)"),
+        "firm": (_is_inn, "object_id of a firm must be an INN (9 digits)"),
+        "pair": (_is_pair, "object_id of a pair must be 'inn1:inn2' with inn1 < inn2"),
+    }
+)
+
+
+class Flag(_Row):
+    """One row of ``flags``: an indicator for review (PK ``flag_id``).
+
+    Computed by 03-screens; a flag is never a finding. ``evidence`` rules are in
+    the module docstring.
+    """
+
+    flag_id: FlagId
+    object_type: FlagObjectType
+    # VARCHAR(64); trade_id, inn or "inn1:inn2" by object_type (checked below).
+    object_id: Annotated[str, StringConstraints(max_length=64)]
+    flag_code: FlagCode
+    severity: Severity
+    evidence: Annotated[Evidence, BeforeValidator(_check_evidence)]
+    rule_version: RuleVersion
+    created_at: UtcDatetime
+
+    # Fields are validated in order, so `object_type` is in `info.data` here
+    # unless it was itself invalid (then that is the only error reported).
+    @field_validator("object_id")
+    @classmethod
+    def _object_id_has_the_format_of_object_type(cls, value: str, info: ValidationInfo) -> str:
+        object_type = info.data.get("object_type")
+        if object_type is None:
+            return value
+        is_valid, message = _OBJECT_ID_RULES[object_type]
+        if not is_valid(value):
+            raise ValueError(message)
+        return value
+
+    @field_validator("flag_code")
+    @classmethod
+    def _flag_code_is_written_for_object_type(
+        cls, value: FlagCode, info: ValidationInfo
+    ) -> FlagCode:
+        object_type = info.data.get("object_type")
+        if object_type is not None and FLAG_OBJECT_TYPES[value] != object_type:
+            raise ValueError(
+                "flag_code is not written for this object_type (docs/model-card.md §3, D-44)"
+            )
+        return value

@@ -1,11 +1,12 @@
-"""Tests for the ``lots`` / ``bids`` row models (``one_director.data.schema``).
+"""Tests for the row models ``Lot``, ``Bid``, ``Flag`` (``one_director.data.schema``).
 
-Two layers:
+Layers:
 
 * contract tests read the column tables straight from ``specs/schema.md`` and
   check that the models have exactly those columns (plus the technical
-  ``collected_at`` / ``source``), the same nullability and the same type limits
-  -- a model cannot silently drift from the spec or grow invented fields;
+  ``collected_at`` / ``source`` for tables filled from a source), the same
+  nullability and the same type limits -- a model cannot silently drift from
+  the spec or grow invented fields;
 * domain tests pin the value rules: identifier patterns, white lists, money as
   ``Decimal`` (never float) with the column scale of 2, UTC timestamps (and a
   ``ValidationError``, not a crash, for values outside the UTC range),
@@ -13,7 +14,11 @@ Two layers:
 * JSON input tests pin what ``model_validate_json`` accepts: money only as a
   string with exactly 2 places, never a JSON number (D-42); timestamps only as
   RFC 3339 strings, never unix time (review 09, N4);
-* D-51 tests pin the behaviour that stays until the open gaps are answered.
+* D-51 tests pin the behaviour that stays until the open gaps are answered;
+* ``flags`` tests pin the white lists against the spec and ``docs/model-card.md``
+  §3 (codes and their level), the ``object_id`` format of each ``object_type``
+  and the ``evidence`` conventions (D-42, D-46, weak-signal ``match_basis``).
+  The rows 03-screens builds are checked in ``test_flags_from_screens.py``.
 
 All data is synthetic (``tests/fixtures/README.md``): INNs start with ``000``,
 URLs point to ``example.invalid``. No network.
@@ -21,9 +26,11 @@ URLs point to ``example.invalid``. No network.
 
 from __future__ import annotations
 
+import enum
 import json
 import re
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -33,24 +40,35 @@ import pytest
 from pydantic import ValidationError
 
 from one_director.data.schema import (
+    EVIDENCE_MAX_DEPTH,
+    FLAG_OBJECT_TYPES,
     Bid,
+    Flag,
+    FlagCode,
+    FlagObjectType,
     Lot,
     LotStatus,
+    MatchBasis,
     ProcedureType,
     Region,
+    Severity,
     Source,
     _to_column_scale,
 )
 
 SCHEMA_MD = Path(__file__).resolve().parents[2] / "specs" / "schema.md"
+MODEL_CARD_MD = Path(__file__).resolve().parents[2] / "docs" / "model-card.md"
 
 # specs/schema.md, "Общие правила": every table filled from a source carries
 # `collected_at TIMESTAMPTZ` and `source`; they are not repeated in the tables.
 TECHNICAL_COLUMNS = ("collected_at", "source")
+# The values of `source` that mean "filled from a source" (not `computed`).
+SOURCE_VALUES = ("etender", "registry", "committee")
 
-MODELS: dict[str, type[Lot] | type[Bid]] = {"lots": Lot, "bids": Bid}
+MODELS: dict[str, type[Lot] | type[Bid] | type[Flag]] = {"lots": Lot, "bids": Bid, "flags": Flag}
 
 COLLECTED_AT = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+CREATED_AT = datetime(2026, 11, 26, 13, 0, tzinfo=UTC)
 
 
 def lot_data(**overrides: Any) -> dict[str, Any]:
@@ -93,7 +111,42 @@ def bid_data(**overrides: Any) -> dict[str, Any]:
     return data
 
 
-VALID: dict[str, Any] = {"lots": lot_data, "bids": bid_data}
+def evidence_data(**overrides: Any) -> dict[str, Any]:
+    """Evidence in the shape 03-screens writes (``screens/results.py``): exact JSON."""
+    data: dict[str, Any] = {
+        "flag_code": "LOW_DISCOUNT",
+        "rule_version": "1.0.0+demo.0123abcd",
+        "lot_ids": ["100001"],
+        "facts": {
+            "start_cost": "1000000.00",  # money: a string with 2 places (D-42)
+            "deal_cost": "998000.00",
+            "currency": "UZS",
+            "customer_inn": "000000001",  # INNs only under *_inn / *_inns (D-46)
+            "market": {"region": "tashkent_city", "category": "test_category", "lots": 60},
+        },
+        "params": {"max_discount": {"low": "0.5", "medium": "0.4", "high": "0.3"}},  # D-46
+        "metrics": {"discount": "0.002000", "bidders": 3, "complete": True, "note": None},
+    }
+    data.update(overrides)
+    return data
+
+
+def flag_data(**overrides: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "flag_id": "99254cd4-4de8-50b2-9a26-96847fad7597",
+        "object_type": "lot",
+        "object_id": "100001",
+        "flag_code": "LOW_DISCOUNT",
+        "severity": "high",
+        "evidence": evidence_data(),
+        "rule_version": "1.0.0+demo.0123abcd",
+        "created_at": CREATED_AT,
+    }
+    data.update(overrides)
+    return data
+
+
+VALID: dict[str, Any] = {"lots": lot_data, "bids": bid_data, "flags": flag_data}
 
 
 @overload
@@ -101,8 +154,10 @@ def build(table: Literal["lots"], **overrides: Any) -> Lot: ...
 @overload
 def build(table: Literal["bids"], **overrides: Any) -> Bid: ...
 @overload
-def build(table: str, **overrides: Any) -> Lot | Bid: ...
-def build(table: str, **overrides: Any) -> Lot | Bid:
+def build(table: Literal["flags"], **overrides: Any) -> Flag: ...
+@overload
+def build(table: str, **overrides: Any) -> Lot | Bid | Flag: ...
+def build(table: str, **overrides: Any) -> Lot | Bid | Flag:
     return MODELS[table].model_validate(VALID[table](**overrides))
 
 
@@ -117,6 +172,8 @@ class SpecColumn:
     name: str
     sql_type: str
     nullable: bool
+    source: str = field(default="computed", compare=False)
+    description: str = field(default="", compare=False)
 
     @property
     def varchar_length(self) -> int | None:
@@ -124,11 +181,15 @@ class SpecColumn:
         return int(match.group(1)) if match else None
 
 
-# "| `name` | TYPE(n) | nullable | ..." -- one column row of a spec table.
+# "| `name` | TYPE(n) | nullable | source | class | description |" -- one column
+# row of a spec table.
 _ROW = re.compile(
     r"^\| `(?P<name>[a-z_]+)` "
     r"\| (?P<type>[A-Z]+(?:\([0-9, ]+\))?(?:\[\])?) "
-    r"\| (?P<null>[^|]+) \|"
+    r"\| (?P<null>[^|]+) "
+    r"\| (?P<source>[^|]+) "
+    r"\| (?P<cls>[^|]+) "
+    r"\|(?P<description>.*)\|$"  # may be empty
 )
 
 
@@ -144,9 +205,39 @@ def spec_columns(table: str) -> list[SpecColumn]:
         row = _ROW.match(line)
         if row:
             nullable = row["null"].replace("*", "").strip().startswith("да")
-            columns.append(SpecColumn(table, row["name"], row["type"], nullable))
+            columns.append(
+                SpecColumn(
+                    table,
+                    row["name"],
+                    row["type"],
+                    nullable,
+                    source=row["source"].strip(),
+                    description=row["description"].strip(),
+                )
+            )
     assert columns, f"no columns parsed for `{table}`"
     return columns
+
+
+def technical_columns(table: str) -> tuple[str, ...]:
+    """``collected_at`` / ``source`` only for a table filled from a source.
+
+    A table whose columns are all ``computed`` (``flags``) is not filled from a
+    source ("Общие правила"), so it has no technical columns.
+    """
+    filled = any(
+        value in column.source for column in spec_columns(table) for value in SOURCE_VALUES
+    )
+    return TECHNICAL_COLUMNS if filled else ()
+
+
+SOURCE_TABLES = [table for table in MODELS if technical_columns(table)]
+
+
+def spec_values(table: str, name: str) -> list[str]:
+    """Backticked values in the description of a spec column (``lot`` / ``firm``)."""
+    (column,) = [c for c in spec_columns(table) if c.name == name]
+    return re.findall(r"`([a-z_]+)`", column.description)
 
 
 ALL_COLUMNS = [column for table in MODELS for column in spec_columns(table)]
@@ -168,13 +259,21 @@ def column_id(column: SpecColumn) -> str:
 def test_spec_parser_sees_known_columns() -> None:
     names = {column_id(column) for column in ALL_COLUMNS}
     assert {"lots.trade_id", "lots.source_url", "bids.participant_status"} <= names
+    assert {"flags.flag_id", "flags.evidence", "flags.created_at"} <= names
     assert len(spec_columns("lots")) == 15
     assert len(spec_columns("bids")) == 7
+    assert len(spec_columns("flags")) == 8
+
+
+def test_only_tables_filled_from_a_source_have_technical_columns() -> None:
+    assert SOURCE_TABLES == ["lots", "bids"]
+    assert technical_columns("flags") == ()
+    assert {column.source for column in spec_columns("flags")} == {"computed"}
 
 
 @pytest.mark.parametrize("table", MODELS)
 def test_model_columns_are_exactly_the_spec_columns(table: str) -> None:
-    expected = [column.name for column in spec_columns(table)] + list(TECHNICAL_COLUMNS)
+    expected = [column.name for column in spec_columns(table)] + list(technical_columns(table))
     assert list(MODELS[table].model_fields) == expected
 
 
@@ -210,13 +309,20 @@ def test_missing_column(column: SpecColumn) -> None:
         assert [(error["type"], error["loc"]) for error in errors] == [("missing", (column.name,))]
 
 
-@pytest.mark.parametrize("table", MODELS)
+@pytest.mark.parametrize("table", SOURCE_TABLES)
 @pytest.mark.parametrize("name", TECHNICAL_COLUMNS)
 def test_technical_columns_are_required(table: str, name: str) -> None:
     data = VALID[table]()
     del data[name]
     with pytest.raises(ValidationError):
         MODELS[table].model_validate(data)
+
+
+@pytest.mark.parametrize(("name", "value"), [("collected_at", COLLECTED_AT), ("source", "etender")])
+def test_computed_table_has_no_technical_columns(name: str, value: object) -> None:
+    with pytest.raises(ValidationError) as exc:
+        Flag.model_validate(flag_data(**{name: value}))
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [("extra_forbidden", (name,))]
 
 
 @pytest.mark.parametrize("column", [c for c in ALL_COLUMNS if c.varchar_length], ids=column_id)
@@ -497,8 +603,17 @@ def test_column_scale_writes_zero_without_a_sign(value: Decimal) -> None:
 
 TIMESTAMP_COLUMNS = [
     *columns_of_type("TIMESTAMPTZ"),
-    *(SpecColumn(table, "collected_at", "TIMESTAMPTZ", nullable=False) for table in MODELS),
+    *(SpecColumn(table, "collected_at", "TIMESTAMPTZ", nullable=False) for table in SOURCE_TABLES),
 ]
+
+
+def test_timestamp_columns() -> None:
+    assert {column_id(c) for c in TIMESTAMP_COLUMNS} == {
+        "bids.submitted_at",
+        "flags.created_at",
+        "lots.collected_at",
+        "bids.collected_at",
+    }
 
 
 @pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
@@ -682,8 +797,10 @@ def test_deal_date_is_a_date_not_a_datetime() -> None:
 def test_json_round_trip_keeps_dates_and_times() -> None:
     lot = Lot.model_validate(lot_data())
     bid = Bid.model_validate(bid_data())
+    flag = Flag.model_validate(flag_data())
     assert Lot.model_validate_json(lot.model_dump_json()) == lot
     assert Bid.model_validate_json(bid.model_dump_json()) == bid
+    assert Flag.model_validate_json(flag.model_dump_json()) == flag
 
 
 # ---------------------------------------------------------------------------
@@ -857,7 +974,9 @@ def test_d51_placeholder_dates_are_accepted(value: date) -> None:
     assert Lot.model_validate(lot_data(deal_date=value)).deal_date == value
 
 
-@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "column", [c for c in TIMESTAMP_COLUMNS if c.table in SOURCE_TABLES], ids=column_id
+)
 @pytest.mark.parametrize(
     "value",
     [datetime(1, 1, 1, tzinfo=UTC), datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)],
@@ -943,6 +1062,9 @@ def test_unknown_columns_are_rejected(table: str, name: str) -> None:
         ("lots", "customer_inn", "12345678"),
         ("bids", "founder", "Тестов Тест Тестович-1"),
         ("lots", "region", "Тестовая обл."),
+        ("flags", "object_id", "00000000X"),
+        ("flags", "flag_code", "Тестовый признак"),
+        ("flags", "rule_version", "версия Тест-1"),
     ],
 )
 def test_validation_error_does_not_echo_input(table: str, name: str, value: str) -> None:
@@ -1002,3 +1124,643 @@ def test_rows_are_immutable(table: str) -> None:
 def test_no_silent_type_coercion_from_python_values(table: str, name: str, value: object) -> None:
     with pytest.raises(ValidationError):
         build(table, **{name: value})
+
+
+# ---------------------------------------------------------------------------
+# flags: white lists from specs/schema.md and docs/model-card.md §3
+# ---------------------------------------------------------------------------
+
+# docs/model-card.md §3, column "Уровень" -> flags.object_type. A group-level
+# screen is written as one `firm` flag per member of the group (D-44,
+# specs/schema.md -> flags); `object_type` is not extended.
+MODEL_CARD_LEVELS = {"лот": "lot", "фирма": "firm", "пара фирм": "pair", "группа": "firm"}
+
+# A valid object_id and a flag code of each object_type.
+OBJECT_IDS = {"lot": "100001", "firm": "000000002", "pair": "000000002:000000003"}
+CODE_OF_TYPE = {"lot": "LOW_DISCOUNT", "firm": "PERPETUAL_RUNNER_UP", "pair": "CO_BIDDING"}
+
+
+def model_card_screens() -> dict[str, str]:
+    """``{flag_code: level}`` from the table of ``docs/model-card.md`` §3."""
+    text = MODEL_CARD_MD.read_text(encoding="utf-8")
+    heading = re.search(r"^## 3\. .*$", text, flags=re.MULTILINE)
+    assert heading, "section 3 not found in docs/model-card.md"
+    rest = text[heading.end() :]
+    next_heading = re.search(r"^## ", rest, flags=re.MULTILINE)
+    section = rest[: next_heading.start()] if next_heading else rest
+    screens: dict[str, str] = {}
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for code in re.findall(r"`([A-Z_]+)`", cells[0]):
+            screens[code] = cells[-1]
+    assert screens, "no screens parsed from docs/model-card.md §3"
+    return screens
+
+
+def typed(object_type: str, **overrides: Any) -> dict[str, Any]:
+    """A valid flag of ``object_type`` (matching object_id and flag_code)."""
+    data = {
+        "object_type": object_type,
+        "object_id": OBJECT_IDS[object_type],
+        "flag_code": CODE_OF_TYPE[object_type],
+    }
+    data.update(overrides)
+    return flag_data(**data)
+
+
+def flag_error(name: str, data: dict[str, Any]) -> ValidationError:
+    """The single validation error of ``data``; it must point at column ``name``."""
+    with pytest.raises(ValidationError) as exc:
+        Flag.model_validate(data)
+    assert [e["loc"] for e in exc.value.errors()] == [(name,)]
+    return exc.value
+
+
+def assert_no_echo(error: ValidationError, value: str) -> None:
+    for rendering in (
+        str(error),
+        error.json(include_input=False),
+        repr(error.errors(include_input=False, include_url=False)),
+    ):
+        assert value not in rendering
+
+
+def test_flag_codes_are_the_codes_of_the_model_card() -> None:
+    screens = model_card_screens()
+    assert len(screens) == 11
+    assert set(get_args(FlagCode)) == set(screens)
+
+
+def test_object_type_of_each_code_follows_the_model_card_level() -> None:
+    screens = model_card_screens()
+    assert set(screens.values()) <= set(MODEL_CARD_LEVELS), "a new level needs a schema decision"
+    expected = {code: MODEL_CARD_LEVELS[level] for code, level in screens.items()}
+    assert dict(FLAG_OBJECT_TYPES) == expected
+    assert FLAG_OBJECT_TYPES["WINNER_ROTATION"] == "firm"  # D-44
+
+
+def test_flag_white_lists_match_spec() -> None:
+    assert set(get_args(FlagObjectType)) == set(spec_values("flags", "object_type"))
+    assert set(get_args(FlagObjectType)) == {"lot", "firm", "pair"}
+    assert set(get_args(Severity)) == set(spec_values("flags", "severity"))
+    assert set(get_args(Severity)) == {"low", "medium", "high"}
+    # specs/schema.md -> flags: values of evidence.match_basis for weak matches.
+    assert set(get_args(MatchBasis)) == {"name_hash_only", "via_intermediary"}
+
+
+def test_flag_mapping_is_read_only() -> None:
+    with pytest.raises(TypeError):
+        FLAG_OBJECT_TYPES["LOW_DISCOUNT"] = "pair"
+
+
+def test_json_column_is_evidence_only() -> None:
+    assert columns_of_type("JSON") == [SpecColumn("flags", "evidence", "JSON", nullable=False)]
+
+
+@pytest.mark.parametrize("code", get_args(FlagCode))
+def test_every_code_is_accepted_at_its_level(code: str) -> None:
+    object_type = FLAG_OBJECT_TYPES[code]
+    flag = Flag.model_validate(typed(object_type, flag_code=code))
+    assert (flag.flag_code, flag.object_type) == (code, object_type)
+
+
+@pytest.mark.parametrize(
+    ("code", "object_type"),
+    [
+        (code, object_type)
+        for code in get_args(FlagCode)
+        for object_type in OBJECT_IDS
+        if object_type != FLAG_OBJECT_TYPES[code]
+    ],
+)
+def test_code_at_another_level_is_rejected(code: str, object_type: str) -> None:
+    error = flag_error("flag_code", typed(object_type, flag_code=code))
+    assert error.errors()[0]["type"] == "value_error"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        # D-5 (🟡): price screen codes are not in docs/model-card.md §3 yet.
+        "PRICE_CV_LOW",
+        "PRICE_RD_HIGH",
+        "PRICE_KURTOSIS_HIGH",
+        "PRICE_SKEW_ABNORMAL",
+        "low_discount",
+        "LOW_DISCOUNT ",
+        "UNKNOWN_CODE",
+        "",
+    ],
+    ids=repr,
+)
+def test_codes_outside_the_model_card_are_rejected(code: str) -> None:
+    flag_error("flag_code", flag_data(flag_code=code))
+
+
+@pytest.mark.parametrize("value", ["group", "LOT", "Lot", "lot ", "graph", "user", ""], ids=repr)
+def test_object_type_outside_the_white_list_is_rejected(value: str) -> None:
+    # One error only: object_id and flag_code are not checked against an
+    # object_type that is itself invalid. `group` is D-44's rejected alternative.
+    flag_error("object_type", flag_data(object_type=value))
+
+
+@pytest.mark.parametrize("value", ["critical", "HIGH", "High", "none", "", "high "], ids=repr)
+def test_severity_outside_the_white_list_is_rejected(value: str) -> None:
+    flag_error("severity", flag_data(severity=value))
+
+
+# ---------------------------------------------------------------------------
+# flags.object_id: trade_id, inn or "inn1:inn2" (sorted) -- by object_type
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("object_type", "value"),
+    [
+        ("lot", "524614"),
+        ("lot", "0"),
+        ("lot", "1" * 12),
+        ("firm", "000000001"),
+        ("firm", "999999999"),
+        ("pair", "000000001:000000002"),
+        ("pair", "000000001:999999999"),
+    ],
+)
+def test_object_id_has_the_format_of_its_type(object_type: str, value: str) -> None:
+    assert Flag.model_validate(typed(object_type, object_id=value)).object_id == value
+
+
+@pytest.mark.parametrize(
+    ("object_type", "value"),
+    [
+        ("lot", ""),
+        ("lot", "1" * 13),
+        ("lot", "52461a"),
+        ("lot", "-1"),
+        ("lot", " 524614"),
+        ("lot", "524614\n"),
+        ("lot", "٥٢٤٦١٤"),  # Arabic-Indic digits
+        ("lot", "000000001:000000002"),
+        ("firm", ""),
+        ("firm", "00000001"),
+        ("firm", "0000000001"),
+        ("firm", "00000000X"),
+        ("firm", "000000001\n"),
+        ("firm", "０００００００００"),  # full-width digits
+        ("firm", "000000001:000000002"),
+        ("firm", "F-0123456789abcdef"),  # firm_ref is the API id, not flags.object_id
+        ("pair", "000000002:000000001"),  # not sorted
+        ("pair", "000000001:000000001"),  # a firm is not a pair with itself
+        ("pair", "000000001"),
+        ("pair", "000000001:"),
+        ("pair", ":000000001"),
+        ("pair", "000000001:000000002:000000003"),
+        ("pair", "000000001-000000002"),
+        ("pair", "000000001,000000002"),
+        ("pair", "000000001 :000000002"),
+        ("pair", "000000001: 000000002"),
+        ("pair", "000000001:000000002\n"),
+        ("pair", "00000001:000000002"),
+        ("pair", "000000001:00000000X"),
+        ("pair", "1" * 64),
+    ],
+    ids=repr,
+)
+def test_object_id_of_another_format_is_rejected(object_type: str, value: str) -> None:
+    error = flag_error("object_id", typed(object_type, object_id=value))
+    if len(value.strip()) >= 6:  # shorter ones ("-1") can occur in the fixed message
+        assert_no_echo(error, value.strip())
+
+
+@pytest.mark.parametrize("value", [100001, None, b"100001"], ids=repr)
+def test_object_id_is_a_string(value: object) -> None:
+    flag_error("object_id", flag_data(object_id=value))
+
+
+# ---------------------------------------------------------------------------
+# flags.flag_id: UUID as text, VARCHAR(36)
+# ---------------------------------------------------------------------------
+
+
+def test_flag_id_is_a_canonical_uuid_string() -> None:
+    (column,) = [c for c in spec_columns("flags") if c.name == "flag_id"]
+    assert column.varchar_length == len(str(uuid.uuid4())) == 36
+    for value in (
+        str(uuid.uuid4()),
+        str(uuid.uuid5(uuid.NAMESPACE_DNS, "flags.example.invalid")),
+        "00000000-0000-0000-0000-000000000000",
+    ):
+        assert Flag.model_validate(flag_data(flag_id=value)).flag_id == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "99254CD4-4DE8-50B2-9A26-96847FAD7597",  # the same UUID in another case: another PK
+        "{99254cd4-4de8-50b2-9a26-96847fad7597}",
+        "urn:uuid:99254cd4-4de8-50b2-9a26-96847fad7597",
+        "99254cd44de850b29a2696847fad7597",
+        "99254cd4-4de8-50b2-9a26-96847fad759",
+        "99254cd4-4de8-50b2-9a26-96847fad75977",
+        "99254cd4-4de8-50b2-9a26-96847fad7597\n",
+        "99254cd4-4de8-50b2-9a26-96847fad759g",
+        "",
+        uuid.UUID("99254cd4-4de8-50b2-9a26-96847fad7597"),  # VARCHAR: text, not a UUID object
+    ],
+    ids=repr,
+)
+def test_flag_id_rejects_other_forms(value: object) -> None:
+    flag_error("flag_id", flag_data(flag_id=value))
+
+
+# ---------------------------------------------------------------------------
+# flags.rule_version: VARCHAR(32), a computed identifier
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["1.0.0+demo.c2fb9a07", "1", "v" * 32, "1.0.0-rc.1+prod_x"])
+def test_rule_version_accepts_identifiers(value: str) -> None:
+    assert Flag.model_validate(flag_data(rule_version=value)).rule_version == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "v" * 33, "1.0 demo", " 1.0", "1.0\n", "1.0\t", "версия-1", "１.0"],
+    ids=repr,
+)
+def test_rule_version_rejects_empty_long_and_non_ascii(value: str) -> None:
+    flag_error("rule_version", flag_data(rule_version=value))
+
+
+# ---------------------------------------------------------------------------
+# flags.evidence: exact JSON object (D-42), INNs only under *_inn / *_inns and
+# thresholds only under top-level `params` (D-46), weak-signal match_basis
+# ---------------------------------------------------------------------------
+
+
+def evidence_error(evidence: object) -> ValidationError:
+    error = flag_error("evidence", flag_data(evidence=evidence))
+    assert [e["type"] for e in error.errors()] == ["value_error"]
+    return error
+
+
+def with_facts(**facts: Any) -> dict[str, Any]:
+    """The sample evidence with extra entries in ``facts``."""
+    evidence = evidence_data()
+    evidence["facts"] = {**evidence["facts"], **facts}
+    return evidence
+
+
+def nested(depth: int, leaf: Any = None, *, container: str = "dict") -> Any:
+    """A JSON value of the given depth (the top-level object has depth 1)."""
+    value = leaf
+    for _ in range(depth):
+        value = {"x": value} if container == "dict" else [value]
+    return value
+
+
+def test_sample_evidence_is_kept_exactly() -> None:
+    flag = Flag.model_validate(flag_data())
+    assert flag.evidence == evidence_data()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{}, [], [{"flag_code": "LOW_DISCOUNT"}], '{"flag_code": "LOW_DISCOUNT"}', 1, True, "x"],
+    ids=repr,
+)
+def test_evidence_must_be_a_non_empty_json_object(value: object) -> None:
+    # A JSON column read from DuckDB comes back as text: the reader parses it
+    # (json.loads) before building the row -- no silent coercion here.
+    evidence_error(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "Тест",
+        0,
+        -1,
+        123456789012345678901234567890,  # Python int is exact
+        True,
+        False,
+        None,
+        [],
+        {},
+        [1, "a", None, [True], {"k": "v"}],
+    ],
+    ids=repr,
+)
+def test_evidence_accepts_exact_json_values(value: object) -> None:
+    flag = Flag.model_validate(flag_data(evidence=with_facts(value=value)))
+    assert flag.evidence["facts"]["value"] == value
+
+
+class _Text(str):
+    __slots__ = ()
+
+
+class _Number(enum.IntEnum):
+    ONE = 1
+
+
+NOT_JSON = [
+    0.5,
+    1.0,  # D-42: no floats at all -- money as a float loses precision
+    float("nan"),
+    float("inf"),
+    Decimal("1.00"),  # Python mode takes the JSON form: money is "1.00"
+    (1, 2),
+    {1, 2},
+    frozenset(),
+    b"bytes",
+    date(2026, 5, 14),
+    datetime(2026, 5, 14, tzinfo=UTC),
+    uuid.UUID(int=1),
+    _Text("subclass of str"),
+    _Number.ONE,
+    1j,
+]
+
+
+@pytest.mark.parametrize("value", NOT_JSON, ids=repr)
+@pytest.mark.parametrize("place", ["top", "facts", "list", "list_of_objects"])
+def test_evidence_rejects_values_that_are_not_exact_json(value: object, place: str) -> None:
+    evidence: dict[str, Any] = evidence_data()
+    if place == "top":
+        evidence["value"] = value
+    elif place == "facts":
+        evidence = with_facts(value=value)
+    elif place == "list":
+        evidence["lot_ids"] = ["100001", value]
+    else:
+        evidence = with_facts(bids=[{"bid_price": "1.00"}, {"bid_price": value}])
+    evidence_error(evidence)
+
+
+@pytest.mark.parametrize("key", [1, None, True, ("a",), _Text("key")], ids=repr)
+def test_evidence_keys_are_strings(key: object) -> None:
+    evidence_error(with_facts(market={key: "x"}))
+    evidence_error({**evidence_data(), key: "x"})
+
+
+def flag_json_with(raw: str) -> str:
+    """The sample flag as JSON text, with ``evidence.facts.deal_cost`` = raw token."""
+    data = Flag.model_validate(flag_data()).model_dump(mode="json")
+    data["evidence"]["facts"]["deal_cost"] = _RAW
+    return json.dumps(data, ensure_ascii=False).replace(json.dumps(_RAW), raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "196510000.00",  # D-42: money as a JSON number is never accepted
+        "123456789012345678.99",  # read as 123456789012345680.00 through float
+        "1e-400",  # read as 0.0
+        "0.5",
+        "1.0",
+        "1e5",
+        "-0.0",
+    ],
+)
+def test_evidence_json_number_with_fraction_or_exponent_is_rejected(raw: str) -> None:
+    with pytest.raises(ValidationError) as exc:
+        Flag.model_validate_json(flag_json_with(raw))
+    assert [(e["type"], e["loc"]) for e in exc.value.errors()] == [("value_error", ("evidence",))]
+
+
+@pytest.mark.parametrize("raw", ["0", "60", "-1", "123456789012345678901234567890"])
+def test_evidence_json_integers_are_accepted(raw: str) -> None:
+    # Counts are integers. An amount written as an integer ("196510000") cannot
+    # be told from a count at this level: D-42 for evidence is the writer's
+    # duty (03-screens writes money as "196510000.00").
+    flag = Flag.model_validate_json(flag_json_with(raw))
+    assert flag.evidence["facts"]["deal_cost"] == int(raw)
+
+
+def test_evidence_money_string_is_kept_exactly_through_json() -> None:
+    flag = Flag.model_validate_json(flag_json_with('"123456789012345678.99"'))
+    assert flag.evidence["facts"]["deal_cost"] == "123456789012345678.99"
+    assert '"deal_cost":"123456789012345678.99"' in flag.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"winner_inn": "000000001"},
+        {"winner_inn": None},
+        {"group_inns": ["000000001", "000000002"]},
+        {"group_inns": []},
+        {"facts": {"scope": {"customer_inn": "000000003"}}},
+        {"losses": [{"trade_id": "100001", "winner_inn": "000000004"}]},
+        {"sequence": [{"winner_inn": None}, {"firm_inns": ["000000005"]}]},
+    ],
+    ids=repr,
+)
+def test_inns_under_inn_keys_are_accepted(evidence: dict[str, Any]) -> None:
+    assert Flag.model_validate(flag_data(evidence=evidence)).evidence == evidence
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "00000001",
+        "0000000001",
+        "00000000X",
+        "000000001 ",
+        "000000001\n",
+        "٠٠٠٠٠٠٠٠١",
+        "",
+        123456789,
+        True,
+        ["000000001"],
+        {"inn": "000000001"},
+        "000000001:000000002",
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("place", ["top", "nested", "list_of_objects"])
+def test_inn_key_holds_one_inn_or_null(value: object, place: str) -> None:
+    # 07-backend masks evidence by these key suffixes (D-46): what is under
+    # them must be exactly what the masking expects.
+    entry = {"winner_inn": value}
+    evidence = {
+        "top": entry,
+        "nested": {"facts": {"scope": entry}},
+        "list_of_objects": {"losses": [{"winner_inn": "000000001"}, entry]},
+    }[place]
+    evidence_error(evidence)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "000000001",
+        None,
+        ["00000001"],
+        ["000000001", "00000000X"],
+        [123456789],
+        [None],
+        [["000000001"]],
+        {"a": "000000001"},
+        ("000000001",),
+    ],
+    ids=repr,
+)
+def test_inns_key_holds_a_list_of_inns(value: object) -> None:
+    evidence_error({"group_inns": value})
+    evidence_error(with_facts(firm_inns=value))
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["inn", "inns", "INN", "Inn", "winnerInn", "Winner_INN", "firm_INNS", "customerinn", "x_Inns"],
+)
+def test_inn_like_key_without_the_suffix_is_rejected(key: str) -> None:
+    # An INN under such a key would not be masked by 07 (D-46: suffix _inn /
+    # _inns). The value is irrelevant: the key itself names an INN.
+    evidence_error({key: "000000001"})
+    evidence_error(with_facts(**{key: None}))
+
+
+def test_inn_outside_inn_keys_cannot_be_detected() -> None:
+    # Pinned limitation: a 9-digit trade_id is also a valid INN string, so the
+    # model cannot tell an INN under another key. 03-screens must follow D-46.
+    evidence = {"lot_ids": ["000000001"], "facts": {"value": "000000002"}}
+    assert Flag.model_validate(flag_data(evidence=evidence)).evidence == evidence
+
+
+def test_params_is_a_top_level_object() -> None:
+    evidence = evidence_data(params={"min_market_lots": 10, "bands": {"low": "1"}})
+    assert Flag.model_validate(flag_data(evidence=evidence)).evidence == evidence
+    without = evidence_data()
+    del without["params"]
+    assert "params" not in Flag.model_validate(flag_data(evidence=without)).evidence
+
+
+@pytest.mark.parametrize("value", ["0.5", 10, None, [], ["0.5"], True], ids=repr)
+def test_params_that_is_not_an_object_is_rejected(value: object) -> None:
+    evidence_error(evidence_data(params=value))
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"facts": {"params": {"min_market_lots": 10}}},
+        {"facts": {"markets": [{"params": {}}]}},
+        {"metrics": {"params": "0.5"}},
+        {"lot_ids": [{"params": {}}]},
+    ],
+    ids=repr,
+)
+def test_params_below_the_top_level_is_rejected(evidence: dict[str, Any]) -> None:
+    # D-46: thresholds only under `params`, which 07 never returns. A nested
+    # `params` would be a second place to strip.
+    evidence_error({**evidence_data(), **evidence})
+
+
+@pytest.mark.parametrize("value", ["name_hash_only", "via_intermediary", None])
+@pytest.mark.parametrize("place", ["top", "nested"])
+def test_match_basis_accepts_the_spec_values(value: str | None, place: str) -> None:
+    entry = {"match_basis": value}
+    evidence = evidence_data(**entry) if place == "top" else with_facts(links=[entry])
+    assert Flag.model_validate(flag_data(evidence=evidence)).evidence == evidence
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["exact", "NAME_HASH_ONLY", "name_hash", "via intermediary", "", 1, True, ["name_hash_only"]],
+    ids=repr,
+)
+@pytest.mark.parametrize("place", ["top", "nested"])
+def test_match_basis_rejects_other_values(value: object, place: str) -> None:
+    # A misspelt weak basis would not be weakened by 05 (rule of weak signals).
+    entry = {"match_basis": value}
+    evidence_error(evidence_data(**entry) if place == "top" else with_facts(links=[entry]))
+
+
+FULL_HASH = "3f2a" * 16  # 64 hex: a whole person_id / address_hash / phone_hash
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"person": FULL_HASH},
+        {"facts": {"address": FULL_HASH.upper()}},
+        {"links": ["P-3f2a", FULL_HASH]},
+        {"links": [{"ref": "P-" + FULL_HASH}]},
+        {"facts": {FULL_HASH: True}},
+        {"note": "hash " + FULL_HASH + " in text"},
+    ],
+    ids=["value", "upper_case", "list_item", "prefixed", "key", "inside_text"],
+)
+def test_full_hashes_are_rejected(evidence: dict[str, Any]) -> None:
+    # specs/agents/03-screens.md: no full hashes in evidence; the API returns
+    # only short prefixes of hashes and person_id (P-3f2a).
+    error = evidence_error({**evidence_data(), **evidence})
+    assert_no_echo(error, FULL_HASH[:16])
+    assert_no_echo(error, FULL_HASH.upper()[:16])
+
+
+@pytest.mark.parametrize("value", ["P-3f2a", FULL_HASH[:63], "c2fb9a07", "1.0.0+demo.c2fb9a07"])
+def test_short_hash_prefixes_are_accepted(value: str) -> None:
+    evidence = with_facts(ref=value)
+    assert Flag.model_validate(flag_data(evidence=evidence)).evidence == evidence
+
+
+@pytest.mark.parametrize("container", ["dict", "list"])
+def test_evidence_depth_is_limited(container: str) -> None:
+    # The top-level object is depth 1; 03-screens' deepest evidence has depth 4.
+    deepest = {"value": nested(EVIDENCE_MAX_DEPTH - 1, "leaf", container=container)}
+    assert Flag.model_validate(flag_data(evidence=deepest)).evidence == deepest
+    evidence_error({"value": nested(EVIDENCE_MAX_DEPTH, "leaf", container=container)})
+
+
+def test_very_deep_json_evidence_is_a_validation_error() -> None:
+    # Deeper than the JSON parser's own limit: still a ValidationError, never a
+    # RecursionError that would abort a whole batch.
+    shallow = Flag.model_validate(flag_data(evidence={"x": None})).model_dump_json()
+    assert Flag.model_validate_json(shallow).evidence == {"x": None}
+    raw = shallow.replace('{"x":null}', '{"x":' * 5000 + "null" + "}" * 5000)
+    assert raw != shallow
+    with pytest.raises(ValidationError):
+        Flag.model_validate_json(raw)
+
+
+@pytest.mark.parametrize(
+    ("evidence", "secret"),
+    [
+        ({"inn": "000000077"}, "000000077"),
+        ({"winner_inn": "00000077X"}, "00000077X"),
+        ({"group_inns": ["000000077", "Тестов Тест Тестович-1"]}, "Тестов Тест Тестович-1"),
+        ({"match_basis": "Тестов Тест Тестович-1"}, "Тестов Тест Тестович-1"),
+        ({"facts": {"deal_cost": 196510000.25}}, "196510000.25"),
+        ({"facts": {"Тестов Тест Тестович-1": 1.5}}, "Тестов Тест Тестович-1"),
+    ],
+    ids=["inn_key", "bad_inn", "name_in_inns", "match_basis", "float", "key"],
+)
+def test_evidence_error_does_not_echo_input(evidence: dict[str, Any], secret: str) -> None:
+    # One error at the column: no key or index from inside the evidence in `loc`.
+    error = evidence_error(evidence)
+    assert_no_echo(error, secret)
+
+
+def test_evidence_is_copied_from_the_input() -> None:
+    source = evidence_data()
+    flag = Flag.model_validate(flag_data(evidence=source))
+    source["facts"]["deal_cost"] = "1.00"
+    source["lot_ids"].append("100002")
+    source["new"] = 1
+    assert flag.evidence == evidence_data()
+    assert flag.evidence is not source
+
+
+def test_evidence_survives_the_json_column() -> None:
+    # What the pipeline writes into the JSON column and a reader parses back.
+    flag = Flag.model_validate(flag_data())
+    text = json.dumps(flag.evidence, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    restored = Flag.model_validate(flag_data(evidence=json.loads(text)))
+    assert restored == flag
