@@ -14,7 +14,8 @@ of 2..``max_group_size`` firms that
   market where few firms compete has lift ~1 and is not flagged).
 
 The ``flags`` table has no ``group`` object type (``specs/schema.md``), so the
-group is reported as one ``firm`` flag per member with the same evidence.
+group is reported as one ``firm`` flag per member with the same evidence, the
+group being ``facts.group_inns`` (sorted INNs) -- D-44.
 Winners are reliable even when bid records disagree with
 ``participants_count`` (R2), so this screen does not need consistent lots.
 """
@@ -37,6 +38,7 @@ from one_director.screens._evidence import (
     get_int,
     get_map,
     get_maps,
+    get_market_lots,
     get_str,
     get_strs,
     lot_ids,
@@ -50,6 +52,7 @@ from one_director.screens._prepare import (
     ScreenOutput,
     make_flag,
     scope_reason,
+    screen_params,
     single_winner,
     trade_sort_key,
 )
@@ -99,7 +102,7 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
         group = get_strs(facts, "group_inns")
         require(bool(group) and group == sorted(set(group)), "group_inns must be sorted and unique")
         market = get_map(facts, "market")
-        market_lots = get_int(market, "lots")
+        market_lots = get_market_lots(market, params)
         market_group_wins = get_int(market, "group_wins")
 
         sequence = get_maps(facts, "sequence")
@@ -149,14 +152,14 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
 
 def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
     settings = config.screens.winner_rotation
-    params: Evidence = settings.model_dump(mode="json")
+    params = screen_params(settings, config)
     rule_version = config.rule_version(RULE_VERSION)
     not_computed: list[NotComputed] = []
     by_market: dict[Market, list[tuple[LotView, _Win]]] = {}
     for view in views:
         inputs = _inputs(view)
         if isinstance(inputs, str):
-            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs))
+            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs, rule_version))
             continue
         market, win = inputs
         by_market.setdefault(market, []).append((view, win))
@@ -166,7 +169,8 @@ def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
         items = by_market[market]
         if len(items) < config.screens.scope.min_market_lots:
             not_computed += [
-                NotComputed(FLAG_CODE, v.trade_id, "market_too_small") for v, _ in items
+                NotComputed(FLAG_CODE, v.trade_id, "market_too_small", rule_version)
+                for v, _ in items
             ]
             continue
         market_wins = Counter(winner for _, (_, _, winner) in items)

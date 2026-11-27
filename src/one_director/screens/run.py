@@ -2,7 +2,8 @@
 
 Pure functions, no I/O: the pipeline (D-21) reads the tables, calls
 :func:`run_structural_screens` and writes :func:`to_flag_rows` into ``flags``
-with parameterised DuckDB queries.
+and :func:`to_coverage_rows` into ``screen_coverage`` (D-45) with parameterised
+DuckDB queries.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from one_director.screens._prepare import Screen, prepare, trade_sort_key
 from one_director.screens.config import ScreensConfig
 from one_director.screens.inputs import BidLike, LotLike
 from one_director.screens.results import (
+    CoverageRow,
     FlagRow,
     JsonValue,
     NotComputed,
@@ -77,7 +79,10 @@ def run_structural_screens(
 
 
 def recompute(evidence: Mapping[str, JsonValue]) -> Evaluation:
-    """Decide a flag again from its stored ``evidence`` alone (severity + metrics)."""
+    """Decide a flag again from its stored ``evidence`` alone (severity + metrics).
+
+    Malformed, inconsistent or out-of-range evidence raises :class:`EvidenceError`.
+    """
     flag_code = get_str(evidence, "flag_code")
     evaluator = _EVALUATORS.get(flag_code)
     if evaluator is None:
@@ -86,10 +91,14 @@ def recompute(evidence: Mapping[str, JsonValue]) -> Evaluation:
     return evaluator(evidence)
 
 
-def to_flag_rows(flags: Iterable[ScreenFlag], *, created_at: datetime) -> list[FlagRow]:
-    """Rows for the ``flags`` table; ``created_at`` must be timezone-aware UTC."""
+def _require_utc(created_at: datetime) -> None:
     if created_at.tzinfo is None or created_at.utcoffset() != timedelta(0):
         raise ValueError("created_at must be a timezone-aware UTC timestamp")
+
+
+def to_flag_rows(flags: Iterable[ScreenFlag], *, created_at: datetime) -> list[FlagRow]:
+    """Rows for the ``flags`` table; ``created_at`` must be timezone-aware UTC."""
+    _require_utc(created_at)
     return [
         FlagRow(
             flag_id=flag.flag_id,
@@ -102,4 +111,21 @@ def to_flag_rows(flags: Iterable[ScreenFlag], *, created_at: datetime) -> list[F
             created_at=created_at,
         )
         for flag in flags
+    ]
+
+
+def to_coverage_rows(
+    not_computed: Iterable[NotComputed], *, created_at: datetime
+) -> list[CoverageRow]:
+    """Rows for the ``screen_coverage`` table (D-45); ``created_at`` must be UTC."""
+    _require_utc(created_at)
+    return [
+        CoverageRow(
+            trade_id=item.trade_id,
+            flag_code=item.flag_code,
+            reason=item.reason,
+            rule_version=item.rule_version,
+            created_at=created_at,
+        )
+        for item in not_computed
     ]

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from tests.screens.helpers import by_code, flagged, run
-from tests.screens.synthetic import MarketBuilder
+
+from one_director.screens.synthetic import MarketBuilder
 
 
 def test_low_discount_depends_on_the_market() -> None:

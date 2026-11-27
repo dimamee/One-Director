@@ -9,9 +9,9 @@ from decimal import Decimal
 
 import pytest
 from tests.screens.helpers import config_with, flagged, injected_world, run
-from tests.screens.synthetic import MarketBuilder, MarketRef
 
 from one_director.screens import STRUCTURAL_FLAG_CODES, ScreenResult
+from one_director.screens.synthetic import MarketBuilder, MarketRef
 
 
 def reasons(result: ScreenResult, trade_id: str) -> dict[str, str]:

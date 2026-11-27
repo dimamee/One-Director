@@ -1,6 +1,24 @@
-"""Output types of the screens: flags, "not computed" records, ``flags`` rows.
+"""Output types of the screens: flags, "not computed" records, table rows.
 
 A flag is an *indicator for review* of an inspector, never a finding.
+
+Conventions of ``flags.evidence`` (consumers rely on them; ``specs/schema.md``):
+
+* **INNs only under keys ending with ``_inn`` or ``_inns``** (D-46) -- a string
+  (or ``null``) and a list of strings: ``firm_inn``, ``winner_inn``,
+  ``customer_inn``, ``participant_inn``, ``firm_inns``, ``group_inns``. 07-backend
+  masks evidence by these key suffixes, so an INN under any other key would
+  leak. Persons never appear (no names, no ``person_id``); lot titles, firm and
+  customer names are never copied.
+* **Applied thresholds only under ``params``** (D-46): the screen's section of the
+  configuration plus ``min_market_lots``. ``params`` never leaves the pipeline
+  (API, PDF, LLM); it is kept so that :func:`~one_director.screens.recompute`
+  can decide the flag again from the evidence alone.
+* Top-level keys: ``flag_code``, ``rule_version``, ``lot_ids``, ``facts`` (inputs),
+  ``params``, ``metrics`` (derived values).
+* Exact JSON: no floats. Money is a string with exactly two decimals
+  (``"196510000.00"``, D-42), derived values have six decimals; neither depends
+  on the scale of the input ``Decimal``, and neither does ``flag_id``.
 """
 
 from __future__ import annotations
@@ -47,6 +65,8 @@ STRUCTURAL_FLAG_CODES: Final[tuple[FlagCode, ...]] = (
 Severity = Literal["low", "medium", "high"]
 ObjectType = Literal["lot", "firm", "pair"]
 
+# Whitelist of screen_coverage.reason (specs/schema.md, D-45). "invalid_values" is
+# not in the schema's copy of this list yet (a PR to specs/schema.md is proposed).
 NotComputedReason = Literal[
     "out_of_scope",  # procedure type or status outside the configured scope (R3)
     "market_undefined",  # region or category is missing
@@ -60,7 +80,9 @@ NotComputedReason = Literal[
     "bid_prices_missing",
     "too_few_bids",
     "degenerate_prices",  # all bid prices equal: spacing is undefined
-    "invalid_values",  # e.g. start_cost <= 0, deal_cost > start_cost, price <= 0
+    # start_cost = 0, deal_cost > start_cost, bid price = 0, participants_count = 0,
+    # or an amount that DECIMAL(20, 2) cannot hold (negative, sub-cent, too large).
+    "invalid_values",
 ]
 
 _FLAG_ID_NAMESPACE: Final = uuid.uuid5(uuid.NAMESPACE_DNS, "flags.one-director.invalid")
@@ -99,11 +121,15 @@ class ScreenFlag:
 
 @dataclass(frozen=True, slots=True)
 class NotComputed:
-    """A screen could not be evaluated for a lot -- this is not a zero or a pass."""
+    """A screen could not be evaluated for a lot -- this is not a zero or a pass.
+
+    One record per (lot, screen); becomes a row of ``screen_coverage`` (D-45).
+    """
 
     flag_code: FlagCode
     trade_id: str
     reason: NotComputedReason
+    rule_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +142,9 @@ class ScreenResult:
 class FlagRow:
     """One row of the ``flags`` table (``specs/schema.md``).
 
-    Temporary: replaced by ``one_director.data.schema.Flag`` once 01-data
-    ships the shared models (D-7).
+    Временно, D-43: a copy of the ``flags`` columns until 01-data ships
+    ``one_director.data.schema.Flag`` (D-7); removed by a separate PR right
+    after that model is in ``main``.
     """
 
     flag_id: str
@@ -126,5 +153,21 @@ class FlagRow:
     flag_code: FlagCode
     severity: Severity
     evidence: Evidence
+    rule_version: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageRow:
+    """One row of the ``screen_coverage`` table (``specs/schema.md``, D-45).
+
+    Временно, D-43: a copy of the ``screen_coverage`` columns until 01-data ships
+    ``one_director.data.schema.ScreenCoverage``; removed by a separate PR right
+    after that model is in ``main``.
+    """
+
+    trade_id: str
+    flag_code: FlagCode
+    reason: NotComputedReason
     rule_version: str
     created_at: datetime

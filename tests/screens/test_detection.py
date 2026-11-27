@@ -54,12 +54,16 @@ def test_object_type_and_id_format(flag_code: str) -> None:
 
 
 def test_rotation_flags_every_member_with_the_same_group_evidence() -> None:
+    """D-44: a group-level screen writes one ``firm`` flag per member, same evidence."""
     data = injected_world()
     flags = by_code(run(data), "WINNER_ROTATION")
     group = sorted(data.truth["WINNER_ROTATION"])
     assert sorted(flag.object_id for flag in flags) == group
+    assert {flag.object_type for flag in flags} == {"firm"}
     for flag in flags:
         assert flag.evidence["facts"]["group_inns"] == group
+        assert flag.evidence == flags[0].evidence
+        assert flag.severity == flags[0].severity
     assert len({flag.flag_id for flag in flags}) == len(flags)
 
 

@@ -8,7 +8,8 @@ from dataclasses import fields
 from pathlib import Path
 
 from tests.screens.helpers import injected_world
-from tests.screens.synthetic import SyntheticBid, SyntheticLot
+
+from one_director.screens.synthetic import SyntheticBid, SyntheticLot
 
 ROOT = Path(__file__).resolve().parents[2]
 TECHNICAL_FIELDS = ["collected_at", "source"]

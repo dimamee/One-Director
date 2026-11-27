@@ -8,6 +8,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import NamedTuple
 
+from pydantic import BaseModel
+
 from one_director.screens._evidence import Evaluation
 from one_director.screens.config import ScopeConfig, ScreensConfig
 from one_director.screens.inputs import BidLike, LotLike
@@ -93,6 +95,13 @@ def prepare(
         lot_bids = tuple(sorted(by_lot.get(lot.trade_id, ()), key=lambda b: b.participant_inn))
         views.append(LotView(lot=lot, bids=lot_bids, market=market, in_scope=in_scope))
     return tuple(sorted(views, key=lambda view: trade_sort_key(view.trade_id)))
+
+
+def screen_params(section: BaseModel, config: ScreensConfig) -> Evidence:
+    """``evidence.params``: the screen's thresholds plus the market-size gate (D-46)."""
+    params: Evidence = section.model_dump(mode="json")
+    params["min_market_lots"] = config.screens.scope.min_market_lots
+    return params
 
 
 def scope_reason(view: LotView) -> NotComputedReason | None:

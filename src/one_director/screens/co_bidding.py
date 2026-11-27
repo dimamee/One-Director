@@ -29,6 +29,7 @@ from one_director.screens._evidence import (
     get_int,
     get_map,
     get_maps,
+    get_market_lots,
     get_str,
     get_strs,
     lot_ids,
@@ -42,6 +43,7 @@ from one_director.screens._prepare import (
     ScreenOutput,
     make_flag,
     scope_reason,
+    screen_params,
     trade_sort_key,
 )
 from one_director.screens.config import ScreensConfig
@@ -82,7 +84,7 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
         for market in get_maps(facts, "markets"):
             get_str(market, "region")
             get_str(market, "category")
-            lots_m = get_int(market, "lots")
+            lots_m = get_market_lots(market, params)
             a_m, b_m, joint_m = (get_int(market, key) for key in ("lots_a", "lots_b", "joint_lots"))
             require(
                 0 <= joint_m <= min(a_m, b_m) and max(a_m, b_m) <= lots_m and lots_m >= 1,
@@ -110,14 +112,14 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
 
 def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
     settings = config.screens.co_bidding
-    params: Evidence = settings.model_dump(mode="json")
+    params = screen_params(settings, config)
     rule_version = config.rule_version(RULE_VERSION)
     not_computed: list[NotComputed] = []
     by_market: dict[Market, list[LotView]] = {}
     for view in views:
         inputs = _inputs(view)
         if isinstance(inputs, str):
-            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs))
+            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs, rule_version))
             continue
         by_market.setdefault(inputs, []).append(view)
 
@@ -128,7 +130,9 @@ def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
     )
     for market, items in by_market.items():
         if len(items) < config.screens.scope.min_market_lots:
-            not_computed += [NotComputed(FLAG_CODE, v.trade_id, "market_too_small") for v in items]
+            not_computed += [
+                NotComputed(FLAG_CODE, v.trade_id, "market_too_small", rule_version) for v in items
+            ]
             continue
         market_lots[market] = len(items)
         for view in items:

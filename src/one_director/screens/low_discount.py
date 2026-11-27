@@ -5,6 +5,9 @@ lot is flagged only if its discount is below the band *and* at least
 ``min_gap_to_market_median`` below the median discount of its market
 (region x category), so markets where small discounts are normal are not
 flagged wholesale.
+
+Amounts enter evidence in their canonical form, ``"196510000.00"`` (D-42), so
+the evidence and ``flag_id`` do not depend on the scale of the input ``Decimal``.
 """
 
 from __future__ import annotations
@@ -15,14 +18,18 @@ from typing import Final
 
 from one_director.screens._evidence import (
     Evaluation,
+    as_money,
     dec,
     exact,
     get_bands,
     get_dec,
     get_map,
+    get_market_lots,
+    get_money,
     get_str,
     lot_ids,
     median,
+    money,
     q,
     require,
     severity_at_most,
@@ -33,6 +40,7 @@ from one_director.screens._prepare import (
     ScreenOutput,
     make_flag,
     scope_reason,
+    screen_params,
 )
 from one_director.screens.config import ScreensConfig
 from one_director.screens.results import (
@@ -56,10 +64,10 @@ def _inputs(view: LotView) -> NotComputedReason | tuple[Market, Decimal, Decimal
     reason = scope_reason(view)
     if reason is not None or view.market is None:
         return reason or "market_undefined"
-    start, deal = view.lot.start_cost, view.lot.deal_cost
-    if deal is None:
+    if view.lot.deal_cost is None:
         return "deal_cost_missing"
-    if start <= 0 or deal < 0 or deal > start:
+    start, deal = as_money(view.lot.start_cost), as_money(view.lot.deal_cost)
+    if start is None or deal is None or start == 0 or deal > start:
         return "invalid_values"
     return view.market, start, deal
 
@@ -71,10 +79,12 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
         min_gap = get_dec(params, "min_gap_to_market_median")
         bands = get_bands(params, "max_discount")
         facts = get_map(evidence, "facts")
-        start, deal = get_dec(facts, "start_cost"), get_dec(facts, "deal_cost")
+        start, deal = get_money(facts, "start_cost"), get_money(facts, "deal_cost")
         get_str(facts, "currency")
-        require(start > 0, "start_cost must be positive")
-        market_median = get_dec(get_map(facts, "market"), "median_discount")
+        require(start > 0 and deal <= start, "need 0 < start_cost and deal_cost <= start_cost")
+        market = get_map(facts, "market")
+        get_market_lots(market, params)
+        market_median = get_dec(market, "median_discount")
 
         discount = discount_of(start, deal)
         gap = q(market_median - discount)
@@ -85,15 +95,14 @@ def evaluate(evidence: Mapping[str, JsonValue]) -> Evaluation:
 
 
 def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
-    settings = config.screens.low_discount
-    params: Evidence = settings.model_dump(mode="json")
+    params = screen_params(config.screens.low_discount, config)
     rule_version = config.rule_version(RULE_VERSION)
     not_computed: list[NotComputed] = []
     by_market: dict[Market, list[tuple[LotView, Decimal, Decimal]]] = {}
     for view in views:
         inputs = _inputs(view)
         if isinstance(inputs, str):
-            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs))
+            not_computed.append(NotComputed(FLAG_CODE, view.trade_id, inputs, rule_version))
             continue
         market, start, deal = inputs
         by_market.setdefault(market, []).append((view, start, deal))
@@ -103,7 +112,7 @@ def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
         for market, items in by_market.items():
             if len(items) < config.screens.scope.min_market_lots:
                 not_computed += [
-                    NotComputed(FLAG_CODE, view.trade_id, "market_too_small")
+                    NotComputed(FLAG_CODE, view.trade_id, "market_too_small", rule_version)
                     for view, _, _ in items
                 ]
                 continue
@@ -119,8 +128,8 @@ def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
                     "rule_version": rule_version,
                     "lot_ids": [view.trade_id],
                     "facts": {
-                        "start_cost": dec(start),
-                        "deal_cost": dec(deal),
+                        "start_cost": money(start),
+                        "deal_cost": money(deal),
                         "currency": view.lot.currency,
                         "market": market_facts,
                     },

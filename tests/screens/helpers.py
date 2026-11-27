@@ -10,9 +10,10 @@ import copy
 import json
 from typing import Any
 
-from tests.screens.synthetic import MarketBuilder, MarketRef, SyntheticData
-
 from one_director.screens import ScreenFlag, ScreenResult, ScreensConfig, run_structural_screens
+from one_director.screens.synthetic import SyntheticData, clean_world, injected_world
+
+__all__ = ["clean_world", "injected_world"]  # re-exported: the standard worlds (D-27)
 
 TEST_CONFIG: dict[str, Any] = {
     "mode": "demo",
@@ -63,12 +64,6 @@ TEST_CONFIG: dict[str, Any] = {
     },
 }
 
-MARKETS = (
-    ("tashkent_city", "construction"),
-    ("samarkand", "food"),
-    ("fergana", "it_services"),
-)
-
 
 def config_with(*changes: tuple[str, Any]) -> ScreensConfig:
     """``TEST_CONFIG`` with dotted-path overrides, e.g. ``("screens.scope.min_market_lots", 3)``."""
@@ -84,25 +79,6 @@ def config_with(*changes: tuple[str, Any]) -> ScreensConfig:
 
 def base_config() -> ScreensConfig:
     return ScreensConfig.model_validate(TEST_CONFIG)
-
-
-def clean_world(seed: int) -> tuple[MarketBuilder, list[MarketRef]]:
-    builder = MarketBuilder(seed)
-    markets = [builder.clean_market(region, category) for region, category in MARKETS]
-    return builder, markets
-
-
-def injected_world(seed: int = 7, *, with_bid_prices: bool = True) -> SyntheticData:
-    """Three clean markets plus every structural scheme, spread over the markets."""
-    builder, (first, second, third) = clean_world(seed)
-    builder.inject_low_discount(first)
-    builder.inject_single_bidder(first)
-    builder.inject_few_bidders(first)
-    builder.inject_co_bidding_pair(second)
-    builder.inject_winner_rotation(second)
-    builder.inject_perpetual_runner_up(third)
-    builder.inject_cover_bids(third)
-    return builder.build(with_bid_prices=with_bid_prices)
 
 
 def run(data: SyntheticData, config: ScreensConfig | None = None) -> ScreenResult:

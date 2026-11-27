@@ -20,6 +20,7 @@ from one_director.screens._evidence import (
     get_dec,
     get_int,
     get_map,
+    get_market_lots,
     lot_ids,
     median,
     q,
@@ -32,6 +33,7 @@ from one_director.screens._prepare import (
     ScreenOutput,
     make_flag,
     scope_reason,
+    screen_params,
 )
 from one_director.screens.config import ScreensConfig
 from one_director.screens.results import (
@@ -60,12 +62,16 @@ def _inputs(view: LotView) -> NotComputedReason | tuple[Market, int]:
     return view.market, count
 
 
-def _gap(evidence: Mapping[str, JsonValue]) -> tuple[int, Decimal, Evidence]:
+def _gap(
+    evidence: Mapping[str, JsonValue], params: Mapping[str, JsonValue]
+) -> tuple[int, Decimal, Evidence]:
     require(len(lot_ids(evidence)) == 1, "participants evidence must name one lot")
     facts = get_map(evidence, "facts")
     count = get_int(facts, "participants_count")
     require(count >= 1, "participants_count must be positive")
-    market_median = get_dec(get_map(facts, "market"), "median_participants")
+    market = get_map(facts, "market")
+    get_market_lots(market, params)
+    market_median = get_dec(market, "median_participants")
     gap = q(market_median - count)
     return count, gap, {"gap_to_market_median": dec(gap)}
 
@@ -74,7 +80,7 @@ def evaluate_single(evidence: Mapping[str, JsonValue]) -> Evaluation:
     with exact():
         params = get_map(evidence, "params")
         bands = get_bands(params, "min_gap_to_market_median")
-        count, gap, metrics = _gap(evidence)
+        count, gap, metrics = _gap(evidence, params)
         if count != 1:
             return Evaluation(None, metrics)
         return Evaluation(severity_at_least(gap, bands), metrics)
@@ -85,7 +91,7 @@ def evaluate_few(evidence: Mapping[str, JsonValue]) -> Evaluation:
         params = get_map(evidence, "params")
         max_participants = get_int(params, "max_participants")
         bands = get_bands(params, "min_gap_to_market_median")
-        count, gap, metrics = _gap(evidence)
+        count, gap, metrics = _gap(evidence, params)
         # One participant is SINGLE_BIDDER, not FEW_BIDDERS.
         if not 2 <= count <= max_participants:
             return Evaluation(None, metrics)
@@ -95,15 +101,17 @@ def evaluate_few(evidence: Mapping[str, JsonValue]) -> Evaluation:
 def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
     rule_version = config.rule_version(RULE_VERSION)
     variants = (
-        (SINGLE_BIDDER, evaluate_single, config.screens.single_bidder.model_dump(mode="json")),
-        (FEW_BIDDERS, evaluate_few, config.screens.few_bidders.model_dump(mode="json")),
+        (SINGLE_BIDDER, evaluate_single, screen_params(config.screens.single_bidder, config)),
+        (FEW_BIDDERS, evaluate_few, screen_params(config.screens.few_bidders, config)),
     )
     not_computed: list[NotComputed] = []
     by_market: dict[Market, list[tuple[LotView, int]]] = {}
     for view in views:
         inputs = _inputs(view)
         if isinstance(inputs, str):
-            not_computed += [NotComputed(code, view.trade_id, inputs) for code, _, _ in variants]
+            not_computed += [
+                NotComputed(code, view.trade_id, inputs, rule_version) for code, _, _ in variants
+            ]
             continue
         market, count = inputs
         by_market.setdefault(market, []).append((view, count))
@@ -113,7 +121,7 @@ def screen(views: tuple[LotView, ...], config: ScreensConfig) -> ScreenOutput:
         for market, items in by_market.items():
             if len(items) < config.screens.scope.min_market_lots:
                 not_computed += [
-                    NotComputed(code, view.trade_id, "market_too_small")
+                    NotComputed(code, view.trade_id, "market_too_small", rule_version)
                     for view, _ in items
                     for code, _, _ in variants
                 ]

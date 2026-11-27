@@ -18,7 +18,7 @@ from tests.screens.helpers import (
     run,
 )
 
-from one_director.screens import ConfigError, ScreensConfig, load_config
+from one_director.screens import ConfigError, ScreensConfig, load_config, load_demo_config
 
 DEMO_FILE = files("one_director.screens").joinpath("demo_config.toml")
 
@@ -80,14 +80,14 @@ max_gap_cv = { low = 0.03, medium = 0.01, high = 0.005 }
 def test_demo_config_is_marked_and_valid() -> None:
     text = DEMO_FILE.read_text(encoding="utf-8")
     assert "DEMO — не для продакшна" in text
-    config = load_config()
+    config = load_demo_config()
     assert config.mode == "demo"
     # D-6: the price block is off in the demo file (scenario B).
     assert config.price_screens_enabled is False
 
 
 def test_rule_version_marks_demo_values() -> None:
-    version = load_config().rule_version("1.0.0")
+    version = load_demo_config().rule_version("1.0.0")
     assert re.fullmatch(r"1\.0\.0\+demo\.[0-9a-f]{8}", version)
     assert len(version) <= 32  # flags.rule_version is VARCHAR(32)
 
@@ -158,13 +158,13 @@ def test_thresholds_are_read_from_config() -> None:
 def test_demo_config_finds_structural_schemes_on_synthetic_data() -> None:
     """Smoke test: the shipped demo values work on the synthetic markets."""
     data = injected_world()
-    result = run(data, load_config())
+    result = run(data, load_demo_config())
     for flag_code, expected in data.truth.items():
         if flag_code == "COVER_BID_PATTERN":
             continue  # price block is disabled in the demo file
         assert flagged(result, flag_code) == expected, flag_code
     builder, _ = clean_world(1)
-    assert run(builder.build(), load_config()).flags == ()
+    assert run(builder.build(), load_demo_config()).flags == ()
 
 
 def test_invalid_file_is_reported_without_its_values(tmp_path: Path) -> None:
@@ -183,3 +183,19 @@ def test_invalid_file_is_reported_without_its_values(tmp_path: Path) -> None:
     path.write_text("mode = [unclosed", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_no_silent_fallback_to_the_demo_file() -> None:
+    """D-47: without RISK_CONFIG_PATH a run does not start; demo values are chosen explicitly."""
+    with pytest.raises(ConfigError, match="RISK_CONFIG_PATH") as excinfo:
+        load_config(None)  # type: ignore[arg-type]
+    assert excinfo.value.__cause__ is None
+    assert load_demo_config().mode == "demo"
+
+
+def test_unreadable_file_is_a_config_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="cannot be read") as excinfo:
+        load_config(tmp_path / "absent.toml")
+    assert str(tmp_path) not in str(excinfo.value)
+    with pytest.raises(ConfigError, match="cannot be read"):
+        load_config(tmp_path)  # a directory

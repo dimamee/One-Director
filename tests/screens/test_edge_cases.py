@@ -12,18 +12,21 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
-from tests.screens.helpers import base_config, injected_world, run
-from tests.screens.synthetic import MarketBuilder
+from tests.screens.helpers import base_config, config_with, injected_world, run
 
 from one_director.screens import (
     ALL_FLAG_CODES,
     STRUCTURAL_FLAG_CODES,
+    CoverageRow,
     FlagRow,
     ScreenResult,
+    cover_bid_pattern,
     run_structural_screens,
+    to_coverage_rows,
     to_flag_rows,
 )
 from one_director.screens.results import NotComputedReason
+from one_director.screens.synthetic import MarketBuilder
 
 ROOT = Path(__file__).resolve().parents[2]
 CREATED_AT = datetime(2026, 12, 3, 9, 0, tzinfo=UTC)
@@ -38,10 +41,26 @@ def model_card_codes() -> set[str]:
     return set(re.findall(r"`([A-Z_]+)`", section))
 
 
-def flags_columns() -> list[str]:
+def schema_section(table: str) -> str:
     text = (ROOT / "specs" / "schema.md").read_text(encoding="utf-8")
-    section = text.split("## `flags`", 1)[1].split("\n## ", 1)[0]
-    return re.findall(r"^\| `([a-z_]+)` \|", section, flags=re.MULTILINE)
+    return text.split(f"## `{table}`", 1)[1].split("\n## ", 1)[0]
+
+
+def table_columns(table: str) -> list[str]:
+    return re.findall(r"^\| `([a-z_]+)` \|", schema_section(table), flags=re.MULTILINE)
+
+
+def flags_columns() -> list[str]:
+    return table_columns("flags")
+
+
+def coverage_reason_whitelist() -> set[str]:
+    row = next(
+        line
+        for line in schema_section("screen_coverage").splitlines()
+        if line.startswith("| `reason` |")
+    )
+    return set(re.findall(r"`([a-z_]+)`", row.split("белый список:", 1)[1]))
 
 
 def test_codes_come_from_the_model_card_catalogue() -> None:
@@ -153,3 +172,61 @@ def test_zero_start_cost_is_invalid_not_a_crash() -> None:
     assert ("LOW_DISCOUNT", target, "invalid_values") in {
         (item.flag_code, item.trade_id, item.reason) for item in result.not_computed
     }
+
+
+# -- screen_coverage (D-45) --------------------------------------------------------
+
+# In pass 1 since its first commit, but missing from the whitelist of
+# specs/schema.md (D-45 says the list was taken from pass 1): a PR adding it to
+# specs/schema.md is proposed in the report; until then this is the only extra.
+PENDING_WHITELIST_REASONS = {"invalid_values"}
+
+
+def test_not_computed_reasons_follow_the_screen_coverage_whitelist() -> None:
+    whitelist = coverage_reason_whitelist()
+    reasons = set(get_args(NotComputedReason))
+    assert len(whitelist) >= 10  # the parser found the list
+    assert whitelist <= reasons
+    assert reasons - whitelist <= PENDING_WHITELIST_REASONS
+
+
+def test_not_computed_records_carry_the_rule_version_of_their_screen() -> None:
+    result = run(injected_world())
+    flag_versions = {flag.flag_code: flag.rule_version for flag in result.flags}
+    assert result.not_computed
+    for item in result.not_computed:
+        assert item.rule_version == flag_versions[item.flag_code]
+    # A disabled price block is still recorded under the version of the config used.
+    disabled_config = config_with(("price_screens_enabled", False))
+    disabled = run(injected_world(), disabled_config)
+    cover = {
+        item.rule_version for item in disabled.not_computed if item.flag_code == "COVER_BID_PATTERN"
+    }
+    assert cover == {disabled_config.rule_version(cover_bid_pattern.RULE_VERSION)}
+    assert cover != {flag_versions["COVER_BID_PATTERN"]}
+
+
+def test_coverage_rows_match_the_screen_coverage_table() -> None:
+    result = run(injected_world(with_bid_prices=False))
+    rows = to_coverage_rows(result.not_computed, created_at=CREATED_AT)
+    assert [f.name for f in fields(CoverageRow)] == table_columns("screen_coverage")
+    assert len(rows) == len(result.not_computed)
+    keys = {(row.trade_id, row.flag_code, row.rule_version) for row in rows}
+    assert len(keys) == len(rows)  # PK (trade_id, flag_code, rule_version)
+    for row, item in zip(rows, result.not_computed, strict=True):
+        assert (row.trade_id, row.flag_code, row.reason) == (
+            item.trade_id,
+            item.flag_code,
+            item.reason,
+        )
+        assert row.reason in coverage_reason_whitelist() | PENDING_WHITELIST_REASONS
+        assert len(row.reason) <= 32
+        assert len(row.rule_version) <= 32
+        assert row.created_at == CREATED_AT
+
+
+@pytest.mark.parametrize("created_at", [NAIVE, TASHKENT_TIME])
+def test_coverage_created_at_must_be_utc(created_at: datetime) -> None:
+    result = run(injected_world(with_bid_prices=False))
+    with pytest.raises(ValueError, match="UTC"):
+        to_coverage_rows(result.not_computed, created_at=created_at)

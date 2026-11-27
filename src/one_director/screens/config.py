@@ -1,17 +1,24 @@
 """Thresholds and severity bands of the screens -- configuration only, never code.
 
-* Demo values: ``demo_config.toml`` in this package, marked
-  "DEMO — не для продакшна" (``docs/model-card.md`` §8).
-* Production values: a TOML file outside the repository. The pipeline takes its
-  path from ``RISK_CONFIG_PATH`` (``security.settings``) and passes it to
+Format (D-47): TOML read with ``tomllib``, shared by 03-screens, 04-graph and
+05-model. Only the top-level ``mode`` (``"demo"`` / ``"production"``),
+``price_screens_enabled`` (D-6) and the ``[screens]`` table are read; the other
+tables (``[graph]``, ``[model]``) are ignored.
+
+* Production values: a file outside the repository. The pipeline takes its path
+  from ``RISK_CONFIG_PATH`` (``security.settings``) and passes it to
   :func:`load_config`; this module does not read the environment.
-* The file is shared with other agents (04-graph, 05-model): only the top-level
-  ``mode``, ``price_screens_enabled`` (D-6) and the ``[screens]`` table are read,
-  other tables are ignored.
+  ``load_config`` has no default and no fallback: without a path it raises
+  :class:`ConfigError`, so a production run without ``RISK_CONFIG_PATH`` does
+  not start (D-47).
+* Demo values: ``demo_config.toml`` in this package, marked
+  "DEMO — не для продакшна" (``docs/model-card.md`` §8). They are used only
+  when the caller asks for them by name, :func:`load_demo_config`.
 
 Every flag records the configuration it was decided with: ``rule_version`` is
-``<code version>+<mode>.<config digest prefix>`` and the applied values are in
-``evidence.params``.
+``<code version>+<mode>.<digest prefix>`` -- the digest of the part of the file
+this module reads (so edits of ``[graph]`` / ``[model]`` or of comments do not
+change the screens' flags) -- and the applied values are in ``evidence.params``.
 """
 
 from __future__ import annotations
@@ -161,13 +168,32 @@ class ScreensConfig(_Section):
         return version
 
 
-def load_config(path: Path | None = None) -> ScreensConfig:
-    """Read the demo configuration (``path=None``) or the file at ``path``."""
+def load_config(path: Path) -> ScreensConfig:
+    """Read the risk configuration at ``path`` (``RISK_CONFIG_PATH``).
+
+    There is no silent fallback to the demo values (D-47): ``path=None`` raises
+    :class:`ConfigError`; a demo run calls :func:`load_demo_config` explicitly.
+    """
     if path is None:
-        resource = files("one_director.screens").joinpath(DEMO_CONFIG_RESOURCE)
-        text = resource.read_text(encoding="utf-8")
-    else:
+        raise ConfigError(
+            "RISK_CONFIG_PATH is not set: no risk configuration to run with "
+            "(a demo run loads the demo file explicitly)"
+        )
+    try:
         text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # The location of the production file is not echoed either.
+        raise ConfigError("risk configuration file cannot be read") from None
+    return _parse(text)
+
+
+def load_demo_config() -> ScreensConfig:
+    """The demo configuration of this package ("DEMO — не для продакшна")."""
+    resource = files("one_director.screens").joinpath(DEMO_CONFIG_RESOURCE)
+    return _parse(resource.read_text(encoding="utf-8"))
+
+
+def _parse(text: str) -> ScreensConfig:
     try:
         data = tomllib.loads(text, parse_float=Decimal)
     except tomllib.TOMLDecodeError as exc:

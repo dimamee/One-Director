@@ -11,17 +11,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCREENS = ROOT / "src" / "one_director" / "screens"
+# The synthetic generator (D-27) is test data: its numbers are parameters of
+# fictional markets, not thresholds, and no screen may import it (checked below).
+GENERATOR = "synthetic.py"
 
 # Literals that are definitions, not tunable thresholds: 0 and 1 (identities,
-# "single" bidder), 2 (a pair, the median of an even count).
+# "single" bidder), 2 (a pair, the median of an even count, cents of money).
 DEFINITIONAL_INTS = {0, 1, 2}
 # Technical constants (no screening meaning), allowed only as these module-level names.
 TECHNICAL_CONSTANTS = {
     "DECIMAL_PRECISION",  # digits of the Decimal context
     "QUANTUM",  # rounding step of stored ratios
+    "MONEY_PRECISION",  # money columns are DECIMAL(20, 2) (specs/schema.md, D-42)
+    "MONEY_LIMIT",  # the largest amount + 0.01 that DECIMAL(20, 2) holds
     "DIGEST_PREFIX_LEN",  # config hash prefix inside rule_version
     "RULE_VERSION_MAX_LEN",  # flags.rule_version is VARCHAR(32)
 }
+
+
+def screen_sources() -> list[Path]:
+    return sorted(path for path in SCREENS.glob("*.py") if path.name != GENERATOR)
 
 
 def _technical_nodes(tree: ast.Module) -> set[int]:
@@ -40,8 +49,8 @@ def _technical_nodes(tree: ast.Module) -> set[int]:
 
 
 def test_screens_code_has_no_numeric_thresholds() -> None:
-    sources = sorted(SCREENS.glob("*.py"))
-    assert sources
+    sources = screen_sources()
+    assert len(sources) >= 10
     offenders = []
     for path in sources:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -70,3 +79,20 @@ def test_screens_code_has_no_numeric_thresholds() -> None:
 def test_demo_config_is_the_only_place_with_demo_values() -> None:
     data_files = {path.name for path in SCREENS.iterdir() if path.suffix in {".toml", ".json"}}
     assert data_files == {"demo_config.toml"}
+
+
+def test_no_screen_imports_the_synthetic_generator() -> None:
+    """Generator values must never reach a screening decision (D-27)."""
+    assert (SCREENS / GENERATOR).is_file()
+    offenders = []
+    for path in screen_sources():
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom):
+                names = [node.module or "", *(f"{node.module}.{a.name}" for a in node.names)]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            if any(name.endswith(".synthetic") or name == "synthetic" for name in names):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, offenders

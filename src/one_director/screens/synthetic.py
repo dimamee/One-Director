@@ -1,9 +1,16 @@
 """Synthetic procurement markets with injected bid-rigging *indicator* schemes.
 
-Test-only stub for the ``lots`` / ``bids`` tables until 01-data ships
-``one_director.data.schema`` (D-7). Field names and types follow
-``specs/schema.md`` exactly (``test_synthetic.py`` checks this against the
-spec), including the technical fields ``collected_at`` and ``source``.
+Shared generator of test data (D-27), owned by 03-screens: the tests of
+03-screens and of 05-model import it from here, so both measure the same
+injected schemes against the same labels (``truth``). It is a stand-in for the
+``lots`` / ``bids`` tables (``specs/schema.md``) and is never used by the
+pipeline; no screen imports it, and its numbers are synthetic market
+parameters, not thresholds.
+
+Field names follow ``specs/schema.md`` exactly (``tests/screens/test_synthetic.py``
+checks this against the spec), including the technical fields ``collected_at``
+and ``source``. Money has scale 2, as DuckDB returns ``DECIMAL(20, 2)``
+(D-42): ``Decimal("196510000.00")``, never ``Decimal("196510000")``.
 
 Everything here is fictional: INNs are ``000`` + 6 digits
 (``tests/fixtures/README.md``), names are ``ООО Тест-N``, links point to
@@ -14,21 +21,37 @@ A "clean" market is a competitive market: 3..7 independent bidders per lot,
 discounts of 5..25 % from the start cost, the lowest bid wins. Each
 ``inject_*`` method adds new lots that carry one scheme and records the
 objects a screen is expected to flag in ``truth`` (``flag_code`` -> set of
-``flags.object_id``).
+``flags.object_id``). :func:`injected_world` and :func:`clean_world` are the
+standard worlds of the tests.
 """
 
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Final
 
-COLLECTED_AT = datetime(2026, 11, 1, tzinfo=UTC)
-CENT = Decimal("0.01")
-BASIS_POINTS = Decimal(10_000)
-COMPETITIVE_PROCEDURES = ("tender", "best_offer", "auction")
-FIRST_DAY = date(2025, 1, 1)
+COLLECTED_AT: Final = datetime(2026, 11, 1, tzinfo=UTC)
+CENT: Final = Decimal("0.01")
+BASIS_POINTS: Final = Decimal(10_000)
+COMPETITIVE_PROCEDURES: Final = ("tender", "best_offer", "auction")
+FIRST_DAY: Final = date(2025, 1, 1)
+STANDARD_MARKETS: Final = (
+    ("tashkent_city", "construction"),
+    ("samarkand", "food"),
+    ("fergana", "it_services"),
+)
+
+
+def cents(value: Decimal) -> Decimal:
+    """An amount as ``DECIMAL(20, 2)`` returns it: exactly two decimal places (D-42)."""
+    amount = value.quantize(CENT)
+    if amount != value:
+        raise ValueError("synthetic amounts have at most two decimal places")
+    return amount
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,8 +119,8 @@ class MarketBuilder:
     """Deterministic builder of synthetic markets (same seed -> same data)."""
 
     def __init__(self, seed: int) -> None:
-        # Synthetic test data, not a security context.
-        self._rng = random.Random(seed)  # noqa: S311
+        # S311/B311: a seeded generator of synthetic test data, not a security context.
+        self._rng = random.Random(seed)  # noqa: S311  # nosec B311
         self._next_party = 1
         self._next_trade = 600_000
         self._lots: list[SyntheticLot] = []
@@ -122,7 +145,7 @@ class MarketBuilder:
     # -- prices ------------------------------------------------------------
 
     def _start_cost(self) -> Decimal:
-        return Decimal(self._rng.randint(10_000, 500_000) * 1_000)
+        return cents(Decimal(self._rng.randint(10_000, 500_000) * 1_000))
 
     @staticmethod
     def _price(start_cost: Decimal, discount_bp: int) -> Decimal:
@@ -143,7 +166,7 @@ class MarketBuilder:
         *,
         customer: str,
         start_cost: Decimal,
-        bids: list[tuple[str, Decimal | None]],
+        bids: Sequence[tuple[str, Decimal | None]],
         winner: str | None,
         deal_date: date | None,
         participants_count: int | None = None,
@@ -156,12 +179,16 @@ class MarketBuilder:
         """Append one lot and its bids; returns ``trade_id``.
 
         ``participants_count`` defaults to the number of bids, ``deal_cost`` to
-        the winner's price, ``region``/``category`` to the market's.
+        the winner's price, ``region``/``category`` to the market's. Amounts
+        are stored with scale 2 (:func:`cents`), whatever scale the caller used.
         """
         trade_id = self._new_trade_id()
-        prices = dict(bids)
+        rows = [(inn, None if price is None else cents(price)) for inn, price in bids]
+        prices = dict(rows)
         if deal_cost is None and winner is not None:
             deal_cost = prices[winner]
+        start_cost = cents(start_cost)
+        deal_cost = None if deal_cost is None else cents(deal_cost)
         self._lots.append(
             SyntheticLot(
                 trade_id=trade_id,
@@ -180,14 +207,14 @@ class MarketBuilder:
                 currency="UZS",
                 deal_date=deal_date,
                 region=region if region is not None else market.region,
-                participants_count=len(bids) if participants_count is None else participants_count,
+                participants_count=len(rows) if participants_count is None else participants_count,
                 status=status,
                 source_url=f"https://example.invalid/lot/{trade_id}",
                 collected_at=COLLECTED_AT,
                 source="etender",
             )
         )
-        for inn, price in bids:
+        for inn, price in rows:
             self._bids.append(
                 SyntheticBid(
                     trade_id=trade_id,
@@ -415,3 +442,26 @@ class MarketBuilder:
             bids=bids,
             truth={code: frozenset(ids) for code, ids in self._truth.items()},
         )
+
+
+# -- standard worlds -------------------------------------------------------------
+
+
+def clean_world(seed: int) -> tuple[MarketBuilder, list[MarketRef]]:
+    """The :data:`STANDARD_MARKETS` without injected schemes (extend, then ``build()``)."""
+    builder = MarketBuilder(seed)
+    markets = [builder.clean_market(region, category) for region, category in STANDARD_MARKETS]
+    return builder, markets
+
+
+def injected_world(seed: int = 7, *, with_bid_prices: bool = True) -> SyntheticData:
+    """Clean standard markets plus every pass-1 scheme, spread over the markets."""
+    builder, (first, second, third) = clean_world(seed)
+    builder.inject_low_discount(first)
+    builder.inject_single_bidder(first)
+    builder.inject_few_bidders(first)
+    builder.inject_co_bidding_pair(second)
+    builder.inject_winner_rotation(second)
+    builder.inject_perpetual_runner_up(third)
+    builder.inject_cover_bids(third)
+    return builder.build(with_bid_prices=with_bid_prices)
