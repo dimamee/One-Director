@@ -176,18 +176,17 @@ def test_zero_start_cost_is_invalid_not_a_crash() -> None:
 
 # -- screen_coverage (D-45) --------------------------------------------------------
 
-# In pass 1 since its first commit, but missing from the whitelist of
-# specs/schema.md (D-45 says the list was taken from pass 1): a PR adding it to
-# specs/schema.md is proposed in the report; until then this is the only extra.
-PENDING_WHITELIST_REASONS = {"invalid_values"}
 
-
-def test_not_computed_reasons_follow_the_screen_coverage_whitelist() -> None:
+def test_not_computed_reasons_match_the_screen_coverage_whitelist() -> None:
+    # Strict both ways: a new reason goes into the code and into specs/schema.md
+    # in the same change (the schema says "новые значения — PR в этот файл").
     whitelist = coverage_reason_whitelist()
     reasons = set(get_args(NotComputedReason))
     assert len(whitelist) >= 10  # the parser found the list
-    assert whitelist <= reasons
-    assert reasons - whitelist <= PENDING_WHITELIST_REASONS
+    assert reasons == whitelist, (
+        f"only in NotComputedReason: {sorted(reasons - whitelist)}; "
+        f"only in specs/schema.md: {sorted(whitelist - reasons)}"
+    )
 
 
 def test_not_computed_records_carry_the_rule_version_of_their_screen() -> None:
@@ -219,7 +218,7 @@ def test_coverage_rows_match_the_screen_coverage_table() -> None:
             item.flag_code,
             item.reason,
         )
-        assert row.reason in coverage_reason_whitelist() | PENDING_WHITELIST_REASONS
+        assert row.reason in coverage_reason_whitelist()
         assert len(row.reason) <= 32
         assert len(row.rule_version) <= 32
         assert row.created_at == CREATED_AT
