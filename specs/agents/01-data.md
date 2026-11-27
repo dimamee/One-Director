@@ -8,7 +8,7 @@
 - `one_director.security.http_client` (Фаза 1) — единственный разрешённый способ ходить в сеть.
 
 **Выход:**
-- `src/one_director/data/schema.py` — pydantic-модели **всех** таблиц `specs/schema.md`: `Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User` (+ модели сырого ответа площадки). Остальные агенты импортируют их отсюда (D-7).
+- `src/one_director/data/schema.py` — pydantic-модели **всех** таблиц `specs/schema.md`: `Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`, `ScreenCoverage` (если принят D-45) (+ модели сырого ответа площадки). Остальные агенты импортируют их отсюда (D-7). Порядок выдачи — по потребителям (*предложение* D-43): `Lot`, `Bid`, `Flag` — H+1; `User`, `AuditRecord` — H+3; `Firm`, `Person`, `ScreenCoverage` — H+8; `RiskScore`, `Brief` — H+12.
 - `src/one_director/data/collect.py` — инкрементальный сборщик (CLI: период, категории, `--dry-run`), пишет сырые ответы в `data/raw/`.
 - `src/one_director/data/process.py` — разбор `data/raw/` → Parquet/DuckDB в `data/processed/`, карантин невалидных записей, удаление обработанного сырья.
 
@@ -22,7 +22,7 @@
 
 **Источник и эндпоинты (D-29, D-39):** хост `apietender.uzex.uz`; только эндпоинты из `docs/scraping-policy.md` §4. `procedure_type` — из `GetTrade.type_name`. Поля `founder`/`beneficiary` из `DealsList` — только через `security.pseudonymize` в момент разбора (D-15), исходный текст на диск не пишется. Период по умолчанию — с 2025-01-01 (D-39).
 
-**Тесты:** `tests/data/` — разбор фикстур, валидация диапазонов (цены ≥ 0, ИНН `^[0-9]{9}$`, даты), карантин, неожиданные поля, идемпотентность, mock-транспорт для 429/403 (остановка), лимит частоты. Реальная сеть в тестах запрещена.
+**Тесты:** `tests/data/` — разбор фикстур, валидация диапазонов (цены ≥ 0, ИНН `^[0-9]{9}$`, даты), деньги со шкалой 2 и отказ от JSON-чисел для денег (D-42), время вне диапазона после перевода в UTC → карантин с причиной, а не исключение, карантин, неожиданные поля, идемпотентность, mock-транспорт для 429/403 (остановка), лимит частоты. Реальная сеть в тестах запрещена.
 
 **Можно менять:** `src/one_director/data/`, `tests/data/`, `tests/fixtures/etender/` (только обезличенные данные).
 

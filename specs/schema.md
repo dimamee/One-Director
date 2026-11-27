@@ -1,17 +1,17 @@
 # Схема данных
 
-Версия 0.2 (решения из `specs/decisions.md`). Изменение схемы — сначала PR в этот файл, потом код.
+Версия 0.3 (решения из `specs/decisions.md`; 0.3 — по итогам пробного запуска агентов, D-42–D-51). Изменение схемы — сначала PR в этот файл, потом код.
 
 **Хранилище — два файла DuckDB, у каждого один писатель** (решение D-23; в DuckDB одновременно пишет только один процесс):
 
 | Файл | Таблицы | Пишет | Читает |
 |---|---|---|---|
-| `data/processed/one_director.duckdb` (+ Parquet в `data/processed/`) | `lots`, `bids`, `firms`, `persons`, `flags`, `risk_scores`, `briefs` | только пайплайн (01 → 03 → 02 → 04 → 03 → 05 → 06) | API — только `read_only=True` |
+| `data/processed/one_director.duckdb` (+ Parquet в `data/processed/`) | `lots`, `bids`, `firms`, `persons`, `flags`, `screen_coverage` (*предложение*, D-45), `risk_scores`, `briefs` | только пайплайн (01 → 03 → 02 → 04 → 03 → 05 → 06) | API — только `read_only=True` |
 | `data/processed/app_state.duckdb` | `audit_log`, `users` | только API (07) и CLI администратора | — |
 
 Пайплайн и API могут работать одновременно. Пайплайн пересобирает `one_director.duckdb` во временный файл и подменяет его атомарно; API переоткрывает соединение при следующем запросе.
 
-**Pydantic-модели всех таблиц** (`Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`) реализует 01-data в `src/one_director/data/schema.py` (решение D-7). Остальные агенты импортируют модели оттуда и не описывают таблицы заново.
+**Pydantic-модели всех таблиц** (`Lot`, `Bid`, `Firm`, `Person`, `Flag`, `RiskScore`, `Brief`, `AuditRecord`, `User`; `ScreenCoverage` — если принят D-45) реализует 01-data в `src/one_director/data/schema.py` (решение D-7). Остальные агенты импортируют модели оттуда и не описывают таблицы заново. Порядок выдачи моделей — по потребителям (*предложение* D-43): `Lot`, `Bid`, `Flag` — H+1; `User`, `AuditRecord` — H+3; `Firm`, `Person`, `ScreenCoverage` — H+8; `RiskScore`, `Brief` — H+12. Пока нужной модели нет, потребитель держит временную копию колонок в своём модуле с пометкой «временно, D-43» и удаляет её отдельным PR сразу после выхода модели.
 
 ## Классы чувствительности
 
@@ -27,7 +27,8 @@
 ## Общие правила
 
 - Все времена — `TIMESTAMPTZ` в UTC; даты — `DATE`.
-- Денежные суммы — `DECIMAL(20, 2)` в валюте `currency` (не float).
+- Денежные суммы — `DECIMAL(20, 2)` в валюте `currency` (не float), **≥ 0**.
+- **Деньги вне БД** (*предложение* D-42) — в JSON, `evidence`, канонических фактах (`facts_hash`) и ответах API — строка ровно с 2 знаками после точки, как её отдаёт DuckDB: `"196510000.00"`, а не `"196510000"` и не JSON-число. JSON-число для денег при разборе не принимается: через float оно теряет точность (`123456789012345678.99` → `…680.00`). Синтетические данные в тестах соблюдают ту же шкалу.
 - ИНН (STIR) — `VARCHAR(9)`, только цифры, валидируется регуляркой `^[0-9]{9}$`. `trade_id` — целое число площадки (например, `524614`), хранится как `VARCHAR(32)`, валидируется `^[0-9]{1,12}$` (решение D-9; при нецифровом значении в фикстурах — PR в этот файл).
 - Текстовые поля из источника (`title`, `*_name`) — **недоверенный ввод**: хранятся как есть, экранируются при выводе, не передаются в LLM как инструкции.
 - Каждая таблица, наполняемая из источника, имеет технические поля `collected_at TIMESTAMPTZ` и `source` (`etender` / `registry` / `committee` — последний только для официально переданного датасета комитета/RTAM, D-4) — в таблицах ниже не повторяются.
@@ -66,6 +67,8 @@
 | `participant_status` | VARCHAR(32) | **да** | etender → нормализация | public | *утверждено (D-10)*: статус записи `GetProposalUsers` (заявка / отзыв / допуск / отклонение — значения пока неизвестны). **Ждём ответа UZEX/RTAM, что означают лишние записи в `GetProposalUsers`** (R2). До ответа — `null`; граф соучастия строится по правилу из `specs/agents/04-graph.md` |
 
 PK: (`trade_id`, `participant_inn`). Открытый вопрос (R2): если лишние записи `GetProposalUsers` — повторные записи того же ИНН (например, отзыв и новая подача), этот PK не подойдёт; решение — после ответа UZEX/RTAM, отдельным PR.
+
+**Расхождение числа участников — правило для всех потребителей (R2, D-49).** Пока значения `participant_status` неизвестны, признаки и рёбра, которые зависят от полного списка заявок лота (соучастие, «вечный второй», ценовые признаки; победитель по `is_winner` к ним не относится), считаются только по лотам, где число записей `bids` по лоту равно `lots.participants_count`. Остальные лоты для таких признаков — «не вычислено» с причиной `participants_mismatch` (`screen_coverage`), а не ноль. Рёбра графа — по правилу `specs/agents/04-graph.md` (ребро `won` к победителю остаётся).
 
 ## `firms` — фирмы (только участники флагнутых лотов)
 
@@ -106,11 +109,27 @@ PK: (`person_id`, `firm_inn`, `role`). Поля `firms.director_person_id` / `fo
 | `object_id` | VARCHAR(64) | нет | computed | sensitive / personal | `trade_id`, `inn` или `inn1:inn2` (для пары, отсортировано) |
 | `flag_code` | VARCHAR(32) | нет | computed | sensitive | код из `docs/model-card.md`, раздел 3 |
 | `severity` | VARCHAR(8) | нет | computed | sensitive | `low` / `medium` / `high` |
-| `evidence` | JSON | нет | computed | sensitive | воспроизводимые факты: ID лотов, значения, `rule_version`, `match_basis`; без ФИО |
+| `evidence` | JSON | нет | computed | sensitive | воспроизводимые факты: ID лотов, значения, `rule_version`, `match_basis`; без ФИО. ИНН — только под ключами с суффиксом `_inn` / `_inns`; применённые пороги — только под ключом `params`, наружу не выдаются (*предложение* D-46) |
 | `rule_version` | VARCHAR(32) | нет | computed | sensitive | версия правила |
 | `created_at` | TIMESTAMPTZ | нет | computed | sensitive | |
 
 Значения `evidence.match_basis` для слабых совпадений: `name_hash_only` — совпадение только по ФИО (`docs/model-card.md`); `via_intermediary` — общий контакт через узел-посредник (R1, `specs/agents/04-graph.md`). Детектор посредников новых колонок не требует.
+
+**Признаки уровня «группа»** (`WINNER_ROTATION`, `docs/model-card.md` §3; *предложение* D-44): `object_type` не расширяется. Пишется флаг `firm` на каждого члена группы с одинаковым `evidence`, где `group_inns` — отсортированный список ИНН группы. Так флаг доходит до `risk_scores` и API, которые знают только `lot` / `firm`, а `object_id` (≤ 64) не должен вмещать группу. Альтернатива — `object_type = group`; решают люди.
+
+## `screen_coverage` — «не вычислено» (*предложение*, D-45)
+
+Признак, который нельзя вычислить для лота (нет цен, малый рынок, расхождение участников и т. п.), — это не ноль и не «чисто». Запись нужна 05-model (метрика «покрытие», `docs/model-card.md` §5) и 07/08 (пометка «не вычислено» в карточке лота). Пишет 03-screens.
+
+| Поле | Тип | Nullable | Источник | Класс | Описание |
+|---|---|---|---|---|---|
+| `trade_id` | VARCHAR(32) | нет (FK `lots`) | computed | sensitive | лот, для которого признак не вычислен |
+| `flag_code` | VARCHAR(32) | нет | computed | sensitive | код из `docs/model-card.md`, раздел 3 |
+| `reason` | VARCHAR(32) | нет | computed | sensitive | белый список: `out_of_scope`, `market_undefined`, `market_too_small`, `deal_cost_missing`, `participants_count_missing`, `participants_mismatch`, `winner_ambiguous`, `deal_date_missing`, `price_screens_disabled`, `bid_prices_missing`, `too_few_bids`, `degenerate_prices` (из прохода 1 03-screens; новые значения — PR в этот файл) |
+| `rule_version` | VARCHAR(32) | нет | computed | sensitive | версия правила |
+| `created_at` | TIMESTAMPTZ | нет | computed | sensitive | |
+
+PK: (`trade_id`, `flag_code`, `rule_version`).
 
 ## `risk_scores` — риск-скоры
 

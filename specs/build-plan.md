@@ -130,12 +130,12 @@ flowchart LR
 | Фаза 1 → 06 | `security.llm_guard`: `build_messages`, `validate_brief`, `render_legal_refs` | docstring `security/llm_guard.py`; `docs/llm-safety.md` §3–7 | H+8 | фейковый LLM-клиент в `tests/report/`; шаблонная справка работает без `llm_guard` |
 | Люди → 01 | `tests/fixtures/etender/` + запись в `tests/fixtures/MANIFEST.md` | `tests/fixtures/README.md` (обезличивание, структура JSON полностью) | H+0 | нет: без фикстур 01 начинает с `src/one_director/data/schema.py` строго по `specs/schema.md` |
 | Люди → 02 | источник реестра + `tests/fixtures/registry/` | ⚠ формат не определён (Q1) | H+0 (код), H+8 (запуск) | нет — задача не начинается |
-| 01 → 02, 03, 04, 05, 07 | `src/one_director/data/schema.py`: `Lot`, `Bid` | `specs/schema.md` → `lots`, `bids` | H+1 | поля из `specs/schema.md`; ⚠ модели остальных таблиц (Q7) |
-| 01 → 03, 04, 05, 07 | таблицы `lots`, `bids` | `specs/schema.md` → `lots`, `bids` | H+3 | 03: генератор синтетических рынков в `tests/screens/`; 04: синтетика в `tests/graph/`; 05: в `tests/model/`; 07: синтетическая DuckDB в памяти в `tests/api/` |
+| 01 → 02, 03, 04, 05, 07 | `src/one_director/data/schema.py`: `Lot`, `Bid`, `Flag` (H+1); `User`, `AuditRecord` (H+3); `Firm`, `Person`, `ScreenCoverage` (H+8); `RiskScore`, `Brief` (H+12) — D-7, порядок — *предложение* D-43 | `specs/schema.md` | H+1…H+12 | до выхода модели — временная копия колонок у потребителя с пометкой «временно, D-43», удаляется сразу после |
+| 01 → 03, 04, 05, 07 | таблицы `lots`, `bids` | `specs/schema.md` → `lots`, `bids` | H+3 | 03: генератор синтетических рынков `src/one_director/screens/synthetic.py` (D-27; деньги со шкалой 2, D-42); 04: синтетика в `tests/graph/`; 05: тот же генератор 03 (D-27) + `tests/model/`; 07: синтетическая DuckDB в памяти в `tests/api/` |
 | 03 (проход 1) → 02 | `flags` (`object_type` = `lot`) → ИНН из `bids` этих лотов | `specs/schema.md` → `flags`, `bids` | H+8 | в `tests/registry/` список ИНН задаётся тестом (тест «лишний ИНН — запроса нет») |
 | 02 → 03, 04, 05, 07 | таблицы `firms`, `persons` | `specs/schema.md` → `firms`, `persons` | H+12 | синтетические `firms`/`persons` в `tests/screens/`, `tests/graph/` |
 | 04 (проход 1) → 03, 05 | пометка посредника, метрики графа | `specs/agents/04-graph.md` (детектор, R2); `evidence.match_basis` в `specs/schema.md` | H+14 | 03: `SHARED_ADDRESS`/`SHARED_PHONE` считаются по правилу слабых признаков `CLAUDE.md` — severity не выше `low`; 05: вектор без метрик графа |
-| 03 → 05, 06, 07 | таблица `flags` (`evidence`, `rule_version`, `severity`) | `specs/schema.md` → `flags`; коды — `docs/model-card.md` §3 | H+8 (проход 1), H+14 (проход 2) | синтетические `flags` в `tests/model/`, `tests/api/`, `tests/report/` |
+| 03 → 05, 06, 07 | таблица `flags` (`evidence`, `rule_version`, `severity`) и `screen_coverage` (*предложение* D-45) | `specs/schema.md` → `flags`, `screen_coverage`; коды — `docs/model-card.md` §3; `evidence.params` наружу не выдаётся (D-46) | H+8 (проход 1), H+14 (проход 2) | синтетические `flags` в `tests/model/`, `tests/api/`, `tests/report/` |
 | 05 → 04, 06, 07 | таблица `risk_scores` (`score`, `top_reasons` ×3, `model_version`) | `specs/schema.md` → `risk_scores` | H+16 | синтетика в тестах потребителей; ⚠ поле `risk` в `GET /lots` до H+16 (Q18) |
 | 05 → 10 | `docs/model-card.md`, разделы 4–7, 11 | `docs/model-card.md` §5: synthetic и real — разные таблицы | H+22 (synthetic), H+42 (real) | в слайдах — «метрики будут» |
 | 04 (проход 2) → 07 | функция подграфа: центр, `depth` 1–2, `max_nodes`, `truncated` | `specs/api-contract.md` → `GET /graph` | H+16 | фейковый подграф по контракту в `tests/api/` |
@@ -176,9 +176,9 @@ Skip в тестовых файлах стоит на уровне модуля 
 
 | Агент | Worktree · ветка | Выход волны |
 |---|---|---|
-| 01-data | `../od-01-data` · `agent/01-data/schema`, затем `agent/01-data/collect` | `data/schema.py` (`Lot`, `Bid`) — H+1; разбор фикстур, карантин; сборщик; первая выгрузка с разрешения человека → `lots`, `bids` |
+| 01-data | `../od-01-data` · `agent/01-data/schema`, затем `agent/01-data/collect` | `data/schema.py` (`Lot`, `Bid`, `Flag`) — H+1, `User`, `AuditRecord` — H+3 (D-43); разбор фикстур, карантин; сборщик; первая выгрузка с разрешения человека → `lots`, `bids` |
 | 07-backend | `../od-07-backend` · `agent/07-backend/skeleton` | `api/main.py` (`app`), `GET /health`, единый формат ошибок (`422` → `400`), middleware `request_id`, заголовки безопасности, CORS; `POST /auth/token` — как только готовы `auth`/`audit` |
-| 03-screens | `../od-03-screens` · `agent/03-screens/structural` | генератор синтетических рынков в `tests/screens/`; структурные признаки на синтетике |
+| 03-screens | `../od-03-screens` · `agent/03-screens/structural` | генератор синтетических рынков `src/one_director/screens/synthetic.py` (D-27); структурные признаки прохода 1 на синтетике (список — `specs/agents/03-screens.md`, D-48) |
 | 10-pitch | `../od-10-pitch` · `agent/10-pitch/outline` | план слайдов в `docs/pitch/` по структуре из `specs/agents/10-pitch.md` |
 | 09-reviewer | `../od-09-review` (detached) | ревью каждого PR |
 | Люди | — | репозиторий публичный (перед этим `gitleaks git --redact .` по истории; ⚠ лицензия Q32); фикстуры etender; вопрос UZEX/RTAM о `GetProposalUsers` (R2); решение A/B в H+3 (раздел 7) |
@@ -369,7 +369,7 @@ Skip в тестовых файлах стоит на уровне модуля 
 - **Владелец / ревьюер:** Участник 1 / 09-reviewer + Участник 2.
 - **Ветка / worktree:** `agent/03-screens/structural` (проход 1) → `agent/03-screens/registry-links` (проход 2); `../od-03-screens`.
 - **Старт / дедлайн:** H+0 на синтетике. Проход 1 на реальных данных — H+3–8, `flags` к H+8. Проход 2 — после `firms`/`persons` (H+12) и детектора 04 (H+14); дедлайн — H+14.
-- **Вход:** `lots`, `bids`, `firms`, `persons`; `docs/model-card.md` §3; конфигурация порогов (демо-файл в модуле + `RISK_CONFIG_PATH`); пометка посредника от 04. Заглушка: генератор синтетических рынков в `tests/screens/`; до детектора 04 `SHARED_ADDRESS`/`SHARED_PHONE` — не выше `low` по правилу слабых признаков.
+- **Вход:** `lots`, `bids`, `firms`, `persons`; `docs/model-card.md` §3; конфигурация порогов (демо-файл в модуле + `RISK_CONFIG_PATH`); пометка посредника от 04. Заглушка: генератор синтетических рынков `src/one_director/screens/synthetic.py` (D-27); до детектора 04 `SHARED_ADDRESS`/`SHARED_PHONE` — не выше `low` по правилу слабых признаков.
 - **Выход:** `src/one_director/screens/`, таблица `flags`.
 - **Готово, когда:** `specs/agents/03-screens.md`. Интеграция: `flag_code` только из `docs/model-card.md` §3; 02 получает список ИНН из `flags` прохода 1; 05 читает `flags` обоих проходов; совпадение через посредника — `match_basis = "via_intermediary"`, связи через людей и структура побед не ослабляются (`CLAUDE.md`, правило слабых признаков).
 - **Безопасность:** пороги продакшна не в публичном коде; `evidence` без ФИО и полных хешей; SQL только параметризованный; «признак», не «нарушение». Подробно — `specs/agents/03-screens.md`.
@@ -382,11 +382,11 @@ Skip в тестовых файлах стоит на уровне модуля 
 Прочитай CLAUDE.md, specs/agents/03-screens.md, specs/schema.md, specs/api-contract.md
 и раздел «03» в specs/build-plan.md.
 Работай только в папках: src/one_director/screens/, tests/screens/.
-Вход: таблицы lots, bids, firms, persons, каталог признаков docs/model-card.md (раздел 3), пометка посредника от 04-graph; если их ещё нет — используй заглушку: генератор синтетических рынков в tests/screens/ (создаёшь сам по полям specs/schema.md); до детектора 04-graph SHARED_ADDRESS/SHARED_PHONE — severity не выше low.
+Вход: таблицы lots, bids, firms, persons, каталог признаков docs/model-card.md (раздел 3), пометка посредника от 04-graph; если их ещё нет — используй заглушку: генератор синтетических рынков src/one_director/screens/synthetic.py (D-27; создаёшь сам строго по полям specs/schema.md, деньги — со шкалой 2, D-42); до детектора 04-graph SHARED_ADDRESS/SHARED_PHONE — severity не выше low.
 Сначала тесты по «Готово, когда», затем код. Тесты без сети, только фикстуры и mock.
 Перед завершением выполни: ruff check . && ruff format --check . && mypy && bandit -c pyproject.toml -r src && pytest
 Не меняй файлы вне своих папок, не ослабляй тесты безопасности, не выходи в сеть.
-Задача этого запуска: <проход 1 — структурные признаки | проход 2 — SHARED_FOUNDER, SHARED_DIRECTOR, SHARED_ADDRESS, SHARED_PHONE> (раздел 3.2 build-plan).
+Задача этого запуска: <проход 1 — LOW_DISCOUNT, SINGLE_BIDDER, FEW_BIDDERS, CO_BIDDING, WINNER_ROTATION, PERPETUAL_RUNNER_UP, COVER_BID_PATTERN | проход 2 — SHARED_FOUNDER, SHARED_DIRECTOR, SHARED_ADDRESS, SHARED_PHONE> (раздел 3.2 build-plan, specs/agents/03-screens.md).
 В конце: отчёт (что сделано, какие тесты добавлены, открытые вопросы) и текст для PR.
 ```
 
@@ -674,7 +674,7 @@ EOF
 
 ## 9. Открытые вопросы
 
-> **Решения по всем вопросам Q1–Q41 — в `specs/decisions.md`** (номер решения D-N = номер вопроса QN). Где решение противоречит тексту этого плана, действует `specs/decisions.md`. Ключевые изменения: `firm_ref` вместо ИНН в API (D-17), два файла DuckDB (D-23), хост `apietender.uzex.uz` (D-29), офлайн-интеграция через ветку `integration` (D-20).
+> **Решения по всем вопросам Q1–Q41 — в `specs/decisions.md`** (номер решения D-N = номер вопроса QN). Где решение противоречит тексту этого плана, действует `specs/decisions.md`. Ключевые изменения: `firm_ref` вместо ИНН в API (D-17), два файла DuckDB (D-23), хост `apietender.uzex.uz` (D-29), офлайн-интеграция через ветку `integration` (D-20). **D-42–D-51** — вопросы из пробного запуска агентов 01, 03 и 09 (27.11.2026): вопрос и ответ сразу в `specs/decisions.md`, в эту таблицу не дублируются.
 
 | № | Вопрос | Почему важно | Кто решает | К какому H+ |
 |---|---|---|---|---|
