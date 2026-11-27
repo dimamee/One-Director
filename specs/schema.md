@@ -125,7 +125,7 @@ PK: (`person_id`, `firm_inn`, `role`). Поля `firms.director_person_id` / `fo
 |---|---|---|---|---|---|
 | `trade_id` | VARCHAR(32) | нет (FK `lots`) | computed | sensitive | лот, для которого признак не вычислен |
 | `flag_code` | VARCHAR(32) | нет | computed | sensitive | код из `docs/model-card.md`, раздел 3 |
-| `reason` | VARCHAR(32) | нет | computed | sensitive | белый список: `out_of_scope`, `market_undefined`, `market_too_small`, `deal_cost_missing`, `participants_count_missing`, `participants_mismatch`, `winner_ambiguous`, `deal_date_missing`, `price_screens_disabled`, `bid_prices_missing`, `too_few_bids`, `degenerate_prices` (из прохода 1 03-screens; новые значения — PR в этот файл) |
+| `reason` | VARCHAR(32) | нет | computed | sensitive | белый список: `out_of_scope`, `market_undefined`, `market_too_small`, `deal_cost_missing`, `participants_count_missing`, `participants_mismatch`, `winner_ambiguous`, `deal_date_missing`, `price_screens_disabled`, `bid_prices_missing`, `too_few_bids`, `degenerate_prices`, `invalid_values` — значения вне области признака: `start_cost = 0`, `deal_cost > start_cost`, цена заявки 0, `participants_count = 0` или сумма, которую не вмещает `DECIMAL(20,2)` (из прохода 1 03-screens; новые значения — PR в этот файл) |
 | `rule_version` | VARCHAR(32) | нет | computed | sensitive | версия правила |
 | `created_at` | TIMESTAMPTZ | нет | computed | sensitive | |
 
