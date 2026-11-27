@@ -19,7 +19,9 @@ requires-python = ">=3.12,<3.13"
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
-extend-exclude = ["data", "notebooks"]
+# "./data" is anchored to the project root: a bare "data" would also skip
+# src/one_director/data/ and tests/data/ (the 01-data module).
+extend-exclude = ["./data", "notebooks"]
 
 [tool.ruff.lint]
 select = [
@@ -80,7 +82,9 @@ ignore_missing_imports = true
 # Bandit: run as `bandit -c pyproject.toml -r src`.
 # ---------------------------------------------------------------------------
 [tool.bandit]
-exclude_dirs = ["tests", ".venv", "notebooks", "data"]
+# Bandit also matches exclude_dirs as substrings of the path: a bare "data" or
+# "tests" would skip src/one_director/data/ or any path containing "tests".
+exclude_dirs = ["./tests", ".venv", "notebooks", "./data"]
 # No global skips. Any `# nosec` must name the test id and carry a reason.
 
 # ---------------------------------------------------------------------------
