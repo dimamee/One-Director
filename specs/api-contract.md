@@ -1,6 +1,6 @@
 # Контракт API
 
-Версия 0.2 (решения D-17, D-18, D-12, D-9 из `specs/decisions.md`). Реализует 07-backend (`src/one_director/api/`). Роли и матрица — `docs/access-control.md`; классы полей — `specs/schema.md`.
+Версия 0.3 (решения D-17, D-18, D-12, D-9 из `specs/decisions.md`; 0.3 — предложения D-45, D-46 по `flags` и «не вычислено»). Реализует 07-backend (`src/one_director/api/`). Роли и матрица — `docs/access-control.md`; классы полей — `specs/schema.md`.
 
 ## Общие правила
 
@@ -113,7 +113,7 @@ FastAPI-ответ `422` с деталями валидации **переопр
 - **Роль:** `analyst`, `supervisor`.
 - **Путь:** `trade_id` — `^[0-9]{1,12}$` (D-9).
 - **Query:** `unmask` bool (по умолчанию `false`; только `supervisor` вне `DEMO_MODE`), `reason` str 10–200 (обязателен при `unmask=true`).
-- **Ответ `200`:** поля лота из `lots`; `participants`: `[{"ref": "P1", "firm_ref": "F-…", "inn": "*********" | "…", "name": "ООО «А»" | "ИП ***" | "…", "entity_type", "is_winner", "bid_price", "risk": {...}}]`; `flags`: `[{flag_code, severity, evidence, rule_version}]` (evidence с замаскированными идентификаторами); `risk`; `brief`: `{"ru": …, "uz": …, "legal_refs": [{id, text_ru, text_uz}], "source": "llm" | "template", "prompt_version", "model"}` или `null`; `disclaimer`: фиксированный текст ru/uz.
+- **Ответ `200`:** поля лота из `lots`; `participants`: `[{"ref": "P1", "firm_ref": "F-…", "inn": "*********" | "…", "name": "ООО «А»" | "ИП ***" | "…", "entity_type", "is_winner", "bid_price", "risk": {...}}]`; `flags`: `[{flag_code, severity, evidence, rule_version}]` (evidence с замаскированными идентификаторами: значения под ключами `*_inn` / `*_inns` маскируются как ИНН участников; ключ `params` — применённые пороги — не отдаётся никогда, *предложение* D-46); `not_computed`: `[{flag_code, reason}]` из `screen_coverage` (*предложение* D-45); `risk`; `brief`: `{"ru": …, "uz": …, "legal_refs": [{id, text_ru, text_uz}], "source": "llm" | "template", "prompt_version", "model"}` или `null`; `disclaimer`: фиксированный текст ru/uz.
 - **Ошибки:** `400`, `401`, `403` (в т. ч. `unmask` без прав или в `DEMO_MODE`), `404`, `429`.
 - **audit_log:** да — `view_lot`; при `unmask=true` дополнительно `unmask` с `reason`.
 
