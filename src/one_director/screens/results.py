@@ -65,8 +65,9 @@ STRUCTURAL_FLAG_CODES: Final[tuple[FlagCode, ...]] = (
 Severity = Literal["low", "medium", "high"]
 ObjectType = Literal["lot", "firm", "pair"]
 
-# Whitelist of screen_coverage.reason (specs/schema.md, D-45). "invalid_values" is
-# not in the schema's copy of this list yet (a PR to specs/schema.md is proposed).
+# Whitelist of screen_coverage.reason (specs/schema.md, D-45). It must equal the
+# schema's list exactly (tests/screens/test_edge_cases.py): a new reason is added
+# here and in specs/schema.md in the same change.
 NotComputedReason = Literal[
     "out_of_scope",  # procedure type or status outside the configured scope (R3)
     "market_undefined",  # region or category is missing
