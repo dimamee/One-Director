@@ -9,7 +9,11 @@ Two layers:
 * domain tests pin the value rules: identifier patterns, white lists, money as
   ``Decimal`` (never float) with the column scale of 2, UTC timestamps (and a
   ``ValidationError``, not a crash, for values outside the UTC range),
-  strictness and which error renderings do and do not echo input values.
+  strictness and which error renderings do and do not echo input values;
+* JSON input tests pin what ``model_validate_json`` accepts: money only as a
+  string with exactly 2 places, never a JSON number (D-42); timestamps only as
+  RFC 3339 strings, never unix time (review 09, N4);
+* D-51 tests pin the behaviour that stays until the open gaps are answered.
 
 All data is synthetic (``tests/fixtures/README.md``): INNs start with ``000``,
 URLs point to ``example.invalid``. No network.
@@ -28,7 +32,15 @@ from typing import Any, Literal, get_args, overload
 import pytest
 from pydantic import ValidationError
 
-from one_director.data.schema import Bid, Lot, LotStatus, ProcedureType, Region, Source
+from one_director.data.schema import (
+    Bid,
+    Lot,
+    LotStatus,
+    ProcedureType,
+    Region,
+    Source,
+    _to_column_scale,
+)
 
 SCHEMA_MD = Path(__file__).resolve().parents[2] / "specs" / "schema.md"
 
@@ -339,11 +351,144 @@ def test_money_survives_json_round_trip_exactly() -> None:
     assert restored.start_cost == Decimal("123456789012345678.99")
 
 
-def test_json_number_is_parsed_as_exact_decimal() -> None:
-    data = Lot.model_validate(lot_data()).model_dump(mode="json")
-    data["start_cost"] = 0.1
-    lot = Lot.model_validate_json(json.dumps(data))
-    assert lot.start_cost == Decimal("0.1")
+_RAW = "__raw_json_token__"
+
+
+def json_with(table: str, name: str, raw: str) -> str:
+    """A valid row as JSON text, with the value of ``name`` replaced by the raw token ``raw``.
+
+    The token is spliced into the text, so JSON numbers that a float cannot hold
+    (``123456789012345678.99``, ``1e-400``) reach the parser exactly as written.
+    """
+    data = build(table).model_dump(mode="json")
+    data[name] = _RAW
+    return json.dumps(data, ensure_ascii=False).replace(json.dumps(_RAW), raw)
+
+
+def from_json(table: str, name: str, raw: str) -> Lot | Bid:
+    return MODELS[table].model_validate_json(json_with(table, name, raw))
+
+
+def json_error(table: str, name: str, raw: str) -> ValidationError:
+    with pytest.raises(ValidationError) as exc:
+        from_json(table, name, raw)
+    assert [e["loc"] for e in exc.value.errors()] == [(name,)]
+    return exc.value
+
+
+# D-42 (specs/schema.md, "Общие правила"): outside the DB, money is a string with
+# exactly 2 places after the point, as DuckDB returns DECIMAL(20, 2). A JSON
+# number is never accepted: it is read through float, which silently changes
+# the amount (the first three cases below are what used to happen).
+JSON_NUMBERS = [
+    "123456789012345678.99",  # was read as 123456789012345680.00
+    "1e-400",  # was read as 0.00
+    "999999999999999999.99",  # valid amount, was rejected as 21 digits
+    "0.1",
+    "196510000",
+    "196510000.00",
+    "0",
+    "1e5",
+    "-0.0",
+]
+
+
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+@pytest.mark.parametrize("raw", JSON_NUMBERS)
+def test_json_number_for_money_is_rejected(column: SpecColumn, raw: str) -> None:
+    error = json_error(column.table, column.name, raw)
+    (detail,) = error.errors(include_input=False, include_url=False)
+    assert detail["type"] == "value_error"
+    assert "exactly 2 decimal places" in detail["msg"]
+
+
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+@pytest.mark.parametrize("raw", ["true", "false", "[]", "{}"])
+def test_json_non_string_for_money_is_rejected(column: SpecColumn, raw: str) -> None:
+    json_error(column.table, column.name, raw)
+
+
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "0.00",
+        "0.01",
+        "0.50",
+        "196510000.00",
+        "123456789012345678.99",
+        "999999999999999999.99",  # 20 digits, the DECIMAL(20, 2) maximum
+    ],
+)
+def test_money_json_string_is_read_exactly(column: SpecColumn, text: str) -> None:
+    row = from_json(column.table, column.name, f'"{text}"')
+    money = getattr(row, column.name)
+    assert money == Decimal(text)
+    assert str(money) == text
+    assert f'"{column.name}":"{text}"' in row.model_dump_json()
+
+
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "196510000",  # D-42: no places -- the case that broke evidence / flag_id
+        "1.5",
+        "1.500",
+        "1.",
+        ".50",
+        "01.00",  # DuckDB never writes leading zeros
+        "00.00",
+        "-0.00",
+        "-1.00",
+        "+1.00",
+        "1e5",
+        "1E+5",
+        "1.00e0",
+        " 1.00",
+        "1.00 ",
+        "1.00\n",
+        "1_000.00",  # Decimal() accepts underscores
+        "1 000.00",
+        "1,00",
+        "١.٠٠",  # Arabic-Indic digits: Decimal() accepts them
+        "１.００",  # full-width digits
+        "NaN",
+        "Infinity",
+        "",
+        "1000000000000000000.00",  # 21 digits
+    ],
+    ids=repr,
+)
+def test_money_json_string_must_have_the_canonical_form(column: SpecColumn, text: str) -> None:
+    json_error(column.table, column.name, json.dumps(text, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("column", MONEY_COLUMNS, ids=column_id)
+def test_money_json_null_follows_nullability(column: SpecColumn) -> None:
+    if column.nullable:
+        row = from_json(column.table, column.name, "null")
+        assert getattr(row, column.name) is None
+    else:
+        json_error(column.table, column.name, "null")
+
+
+@pytest.mark.parametrize("value", [Decimal("1.5"), Decimal("-1.5"), Decimal("-0.01")])
+def test_column_scale_never_changes_the_sign_of_a_non_zero_amount(value: Decimal) -> None:
+    # Review 09, N3: -0 must become 0.00, but the helper must not rely on ge=0
+    # to keep -1.50 negative (copy_abs() would silently turn it into 1.50).
+    scaled = _to_column_scale(value)
+    assert scaled == value
+    assert scaled.is_signed() == value.is_signed()
+
+
+@pytest.mark.parametrize(
+    "value", [Decimal("-0"), Decimal("-0.00"), Decimal("-0E+3"), Decimal("0E-10")]
+)
+def test_column_scale_writes_zero_without_a_sign(value: Decimal) -> None:
+    scaled = _to_column_scale(value)
+    assert str(scaled) == "0.00"
+    assert not scaled.is_signed()
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +503,8 @@ TIMESTAMP_COLUMNS = [
 
 @pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
 def test_timestamps_reject_naive_datetime(column: SpecColumn) -> None:
+    naive = datetime(2026, 5, 10, 9, 30)  # noqa: DTZ001 -- naive on purpose: must be rejected
     with pytest.raises(ValidationError):
-        naive = datetime(2026, 5, 10, 9, 30)  # noqa: DTZ001 -- naive on purpose: must be rejected
         build(column.table, **{column.name: naive})
 
 
@@ -411,6 +556,119 @@ def test_timestamp_outside_utc_range_in_json_is_a_validation_error(
     with pytest.raises(ValidationError) as exc:
         MODELS[column.table].model_validate_json(json.dumps(data))
     assert_out_of_utc_range_error(exc.value, column.name, value.isoformat())
+
+
+# Review 09, N4: in JSON, pydantic reads a string of digits as unix time
+# ("1700000000" -> 2023-11-14T22:13:20Z), so a misplaced number or a counter
+# would become a plausible timestamp. JSON timestamps must be RFC 3339 strings
+# with seconds and an explicit offset -- the form model_dump_json() writes.
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '"1700000000"',
+        '"1700000000000"',
+        '"1700000000.5"',
+        '"0"',
+        "1700000000",
+        "1700000000.5",
+        "true",
+    ],
+)
+def test_timestamp_json_rejects_unix_time(column: SpecColumn, raw: str) -> None:
+    json_error(column.table, column.name, raw)
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('"2026-05-10T09:30:00Z"', datetime(2026, 5, 10, 9, 30, tzinfo=UTC)),
+        ('"2026-05-10T14:30:00+05:00"', datetime(2026, 5, 10, 9, 30, tzinfo=UTC)),
+        ('"2026-05-10T04:30:00-05:00"', datetime(2026, 5, 10, 9, 30, tzinfo=UTC)),
+        ('"2026-05-10T09:30:00.5Z"', datetime(2026, 5, 10, 9, 30, 0, 500000, tzinfo=UTC)),
+        ('"2026-05-10T09:30:00.123456Z"', datetime(2026, 5, 10, 9, 30, 0, 123456, tzinfo=UTC)),
+    ],
+)
+def test_timestamp_json_accepts_rfc3339(column: SpecColumn, raw: str, expected: datetime) -> None:
+    row = from_json(column.table, column.name, raw)
+    value = getattr(row, column.name)
+    assert value == expected
+    assert value.tzinfo is UTC
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2026-05-10T09:30:00",  # no offset
+        "2026-05-10",
+        "2026-05-10T09:30Z",  # no seconds
+        "2026-05-10 09:30:00Z",
+        "2026-05-10t09:30:00z",
+        "2026-05-10T09:30:00.1234567Z",  # more than microseconds: would be truncated
+        "2026-05-10T09:30:00+0500",
+        "2026-05-10T09:30:00+05",
+        "20260510T093000Z",
+        "2026-05-10T09:30:00Z\n",
+        " 2026-05-10T09:30:00Z",
+        "２０２６-05-10T09:30:00Z",  # full-width digits
+        "2026-02-30T09:30:00Z",
+        "2026-05-10T24:00:00Z",
+        "2026-05-10T23:59:60Z",
+        "",
+    ],
+    ids=repr,
+)
+def test_timestamp_json_rejects_other_forms(column: SpecColumn, text: str) -> None:
+    error = json_error(column.table, column.name, json.dumps(text, ensure_ascii=False))
+    if text.strip():
+        assert text.strip() not in str(error)
+        assert text.strip() not in error.json(include_input=False)
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+def test_timestamp_json_null_follows_nullability(column: SpecColumn) -> None:
+    if column.nullable:
+        row = from_json(column.table, column.name, "null")
+        assert getattr(row, column.name) is None
+    else:
+        json_error(column.table, column.name, "null")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '"1700000000"',
+        '"19675"',
+        "1699920000",
+        '"2026-05-14T00:00:00Z"',
+        '"20260514"',
+        '"2026-5-14"',
+        '"2026-05-14\\n"',
+    ],
+)
+def test_deal_date_json_is_only_an_iso_date(raw: str) -> None:
+    # pydantic's strict JSON rules already do this for `date` (unlike for
+    # `datetime`, N4); the test catches a change on a pydantic upgrade.
+    assert from_json("lots", "deal_date", '"2026-05-14"').deal_date == date(2026, 5, 14)
+    json_error("lots", "deal_date", raw)
+
+
+def test_validate_strings_follows_the_json_rules() -> None:
+    # The schema docstring promises it; model_validate_strings is the other
+    # non-Python input mode of pydantic.
+    data = {
+        key: str(value)
+        for key, value in Lot.model_validate(lot_data()).model_dump(mode="json").items()
+        if value is not None
+    }
+    lot = Lot.model_validate_strings(data)
+    assert lot == Lot.model_validate(lot_data())
+    for name, value in [("start_cost", "1000000"), ("collected_at", "1700000000")]:
+        with pytest.raises(ValidationError) as exc:
+            Lot.model_validate_strings({**data, name: value})
+        assert [e["loc"] for e in exc.value.errors()] == [(name,)]
 
 
 def test_deal_date_is_a_date_not_a_datetime() -> None:
@@ -582,6 +840,45 @@ def test_bid_without_price_and_time_is_valid() -> None:
     bid = Bid.model_validate(bid_data(bid_price=None, submitted_at=None, is_winner=False))
     assert bid.bid_price is None
     assert bid.submitted_at is None
+
+
+# ---------------------------------------------------------------------------
+# D-51: open gaps keep the current behaviour until the answers. These tests pin
+# it, so that a change is made on purpose, together with specs/schema.md.
+# ---------------------------------------------------------------------------
+
+
+def test_d51_empty_title_is_accepted() -> None:
+    assert Lot.model_validate(lot_data(title="")).title == ""
+
+
+@pytest.mark.parametrize("value", [date(1, 1, 1), date(9999, 12, 31)])
+def test_d51_placeholder_dates_are_accepted(value: date) -> None:
+    assert Lot.model_validate(lot_data(deal_date=value)).deal_date == value
+
+
+@pytest.mark.parametrize("column", TIMESTAMP_COLUMNS, ids=column_id)
+@pytest.mark.parametrize(
+    "value",
+    [datetime(1, 1, 1, tzinfo=UTC), datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)],
+    ids=datetime.isoformat,
+)
+def test_d51_placeholder_timestamps_in_utc_are_accepted(
+    column: SpecColumn, value: datetime
+) -> None:
+    assert getattr(build(column.table, **{column.name: value}), column.name) == value
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "completed", "deal_cost": None, "deal_date": None},
+        {"start_cost": Decimal("100.00"), "deal_cost": Decimal("150.00")},
+        {"status": "cancelled", "deal_cost": Decimal("950000.00")},
+    ],
+)
+def test_d51_cross_field_rules_are_not_checked(overrides: dict[str, Any]) -> None:
+    Lot.model_validate(lot_data(**overrides))
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 """Row models of the ``lots`` and ``bids`` tables (owner: 01-data).
 
-Source of truth: ``specs/schema.md`` (version 0.2). Change the spec first, then
+Source of truth: ``specs/schema.md`` (version 0.3). Change the spec first, then
 this module; ``tests/data/test_schema.py`` reads the column tables from the spec
 and fails if the models drift from it. Other agents import the models from here
 (decision D-7) and do not describe these tables again.
@@ -14,7 +14,22 @@ Rules shared by every row model:
   kept with the column scale of exactly 2 places (``1.5`` -> ``1.50``), dates
   are ``date``, timestamps are timezone-aware ``datetime`` and are stored in
   UTC, identifiers are strings. Raw platform values are converted by the parser
-  before a row is built; JSON input goes through ``model_validate_json``;
+  before a row is built (``model_validate`` takes Python objects only);
+* JSON input (``model_validate_json``; ``model_validate_strings`` follows the
+  same rules) is our own JSON -- the form ``model_dump_json`` writes -- and is
+  read without any lossy step:
+
+  - money (D-42) is a string with exactly 2 places after the point, as DuckDB
+    returns ``DECIMAL(20, 2)``: ``"196510000.00"``. ASCII digits, no sign, no
+    exponent, no leading zeros, no spaces or underscores. A JSON number is
+    rejected: it is read through ``float``, which silently changes the amount
+    (``123456789012345678.99`` -> ``...680.00``, ``1e-400`` -> ``0.00``);
+  - timestamps are RFC 3339 strings with seconds and an explicit offset:
+    ``"2026-05-10T09:30:00Z"``, ``"2026-05-10T14:30:00+05:00"``, at most 6
+    fractional digits. A string of digits (``"1700000000"``), which pydantic
+    would read as unix time, and a JSON number are rejected;
+  - dates are ``"YYYY-MM-DD"`` (pydantic's strict JSON rules);
+
 * every bad value, including a timestamp with no UTC equivalent, fails as a
   ``ValidationError``, so one bad record can be quarantined without aborting
   the parse;
@@ -27,15 +42,30 @@ Rules shared by every row model:
 * source texts (``title``, ``*_name``, ``display_no``) are untrusted input: they
   are stored as is and escaped on output, never treated as instructions.
 
+Open gaps of ``lots`` / ``bids`` keep the current behaviour until the answers
+(D-51): an empty ``title`` and placeholder dates (``0001-01-01``,
+``9999-12-31``) pass, cross-field rules (``completed`` => ``deal_cost``,
+``deal_cost <= start_cost``) are not checked.
+
 Models of the other tables and of the raw platform responses are not part of
 this module yet.
 """
 
+import re
 from datetime import UTC, date, datetime
 from decimal import Context, Decimal
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+)
 
 __all__ = [
     "Bid",
@@ -63,37 +93,90 @@ def _to_utc(value: datetime) -> datetime:
         raise ValueError("timestamp is out of range after conversion to UTC") from None
 
 
+# RFC 3339 date-time with seconds and an explicit offset, ASCII digits only
+# (`[0-9]`, not `\d`). Matched with fullmatch: `$` would let a trailing newline in.
+_RFC3339 = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}"  # date
+    r"T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?"  # time, at most microseconds
+    r"(?:Z|[+-][0-9]{2}:[0-9]{2})"  # offset
+)
+_TIMESTAMP_TEXT_ERROR = "timestamp must be an RFC 3339 string with seconds and an offset"
+
+
+def _timestamp_from_json(value: object, info: ValidationInfo) -> object:
+    # Python input goes on to the strict check (datetime instances only). JSON
+    # input is parsed here: after a before-validator pydantic validates the
+    # result as a Python object, so the string must already be a datetime.
+    if info.mode == "python":
+        return value
+    if not isinstance(value, str) or _RFC3339.fullmatch(value) is None:
+        raise ValueError(_TIMESTAMP_TEXT_ERROR)
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        # E.g. 2026-02-30: the stdlib message would echo the value.
+        raise ValueError(_TIMESTAMP_TEXT_ERROR) from None
+
+
 # DECIMAL(20, 2): 20 significant digits. Fixed here so that the result does not
 # depend on the caller's thread-local decimal context.
 _DECIMAL_20 = Context(prec=20)
 _CENT = Decimal("0.01")
+_ZERO = Decimal("0.00")
 
 
 def _to_column_scale(value: Decimal) -> Decimal:
     # The column has a fixed scale, so 1.5, 1.500, 0E-10 and 1E+5 come back from
     # DuckDB as 1.50, 1.50, 0.00 and 100000.00. Rows use the same form, so the
     # canonical JSON (facts_hash, evidence) does not change after a round trip.
-    # Nothing is rounded: more than 2 places were already rejected. copy_abs()
-    # only turns -0 (allowed by ge=0) into 0.
-    return value.quantize(_CENT, context=_DECIMAL_20).copy_abs()
+    # Nothing is rounded: more than 2 places were already rejected.
+    scaled = value.quantize(_CENT, context=_DECIMAL_20)
+    # -0 passes ge=0 but must not keep its sign ("-0.00"). Only zero is
+    # replaced, so the sign of any other amount never depends on ge=0.
+    return _ZERO if scaled.is_zero() else scaled
+
+
+# Money in JSON (D-42): exactly what DuckDB writes for DECIMAL(20, 2) >= 0.
+# The number of digits is left to max_digits.
+_MONEY_TEXT = re.compile(r"(?:0|[1-9][0-9]*)\.[0-9]{2}")
+_MONEY_TEXT_ERROR = "money must be a JSON string with exactly 2 decimal places, e.g. 0.50"
+
+
+def _money_from_json(value: object, info: ValidationInfo) -> object:
+    # Python input goes on to the strict check (Decimal instances only). In JSON
+    # a number has already been read as float (precision lost), so only the
+    # canonical string is accepted; it is converted to Decimal exactly.
+    if info.mode == "python":
+        return value
+    if not isinstance(value, str) or _MONEY_TEXT.fullmatch(value) is None:
+        raise ValueError(_MONEY_TEXT_ERROR)
+    return Decimal(value)
 
 
 # Platform trade id: an integer kept as VARCHAR(32) (D-9).
 TradeId = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,12}$")]
 # INN (STIR): VARCHAR(9), ASCII digits only.
 Inn = Annotated[str, StringConstraints(pattern=r"^[0-9]{9}$")]
-# DECIMAL(20, 2) in the row's `currency`; prices are >= 0 (specs/agents/01-data.md).
+# DECIMAL(20, 2) in the row's `currency`, >= 0 (specs/schema.md, "Общие правила").
+# Validators run outside-in: the JSON check first, then the Decimal constraints,
+# then the column scale.
 Money = Annotated[
     Decimal,
     Field(ge=0, max_digits=20, decimal_places=2, allow_inf_nan=False),
     AfterValidator(_to_column_scale),
+    BeforeValidator(_money_from_json),
 ]
 # ISO 4217 alphabetic code, VARCHAR(3).
 CurrencyCode = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 # Computed link to the lot page, VARCHAR(500); documents are never downloaded.
 SourceUrl = Annotated[str, StringConstraints(max_length=500, pattern=r"^https://\S+$")]
 # TIMESTAMPTZ: timezone-aware, normalised to UTC; no UTC value -> ValidationError.
-UtcDatetime = Annotated[AwareDatetime, AfterValidator(_to_utc)]
+# In JSON: RFC 3339 only, never unix time.
+UtcDatetime = Annotated[
+    AwareDatetime,
+    AfterValidator(_to_utc),
+    BeforeValidator(_timestamp_from_json),
+]
 
 Source = Literal["etender", "registry", "committee"]
 ProcedureType = Literal["best_offer", "tender", "auction", "other"]
